@@ -37,6 +37,30 @@ def init_db():
                 FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS image_contexts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                description TEXT NOT NULL,
+                model TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            )
+        """)
+        image_columns = {row[1] for row in conn.execute("PRAGMA table_info(image_contexts)")}
+        if "thread_id" not in image_columns:
+            conn.execute("ALTER TABLE image_contexts ADD COLUMN thread_id INTEGER")
+        default_thread = conn.execute("""
+            SELECT id FROM threads
+            ORDER BY datetime(updated_at) DESC, id DESC
+            LIMIT 1
+        """).fetchone()
+        if default_thread:
+            conn.execute(
+                "UPDATE image_contexts SET thread_id = ? WHERE thread_id IS NULL",
+                (default_thread["id"],),
+            )
         migrate_old_logs(conn)
 
 
@@ -59,6 +83,43 @@ def set_global_context(value: str):
             """,
             ("global_context", value.strip()),
         )
+
+
+def delete_global_context():
+    with get_connection() as conn:
+        conn.execute("DELETE FROM settings WHERE key = ?", ("global_context",))
+
+
+def add_image_context(thread_id: int, filename: str, description: str, model: str):
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO image_contexts (thread_id, filename, description, model)
+            VALUES (?, ?, ?, ?)
+            """,
+            (thread_id, filename.strip() or "uploaded-image", description.strip(), model),
+        )
+        return cursor.lastrowid
+
+
+def list_image_contexts(thread_id: int):
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT id, thread_id, filename, description, model, created_at
+            FROM image_contexts
+            WHERE thread_id = ?
+            ORDER BY id DESC
+        """, (thread_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+
+def delete_image_context(thread_id: int, image_context_id: int):
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM image_contexts WHERE id = ? AND thread_id = ?",
+            (image_context_id, thread_id),
+        )
+        return cursor.rowcount > 0
 
 
 def migrate_old_logs(conn):
@@ -132,6 +193,13 @@ def get_thread(thread_id: int):
             (thread_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def delete_thread(thread_id: int):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM image_contexts WHERE thread_id = ?", (thread_id,))
+        cursor = conn.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
+        return cursor.rowcount > 0
 
 
 def get_or_create_first_thread() -> int:
