@@ -18,9 +18,11 @@ from DATABASE import (
     set_global_context,
     title_from_prompt,
 )
+from knowledge_base_api import init_knowledge_base, router as knowledge_base_router
 from templates import render_page
 
 app = FastAPI()
+app.include_router(knowledge_base_router)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "devstral")
@@ -46,6 +48,7 @@ class GlobalContextRequest(BaseModel):
 @app.on_event("startup")
 def startup():
     init_db()
+    init_knowledge_base()
 
 
 def build_context_prompt(global_context: str, messages, prompt: str) -> str:

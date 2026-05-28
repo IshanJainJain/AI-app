@@ -1,0 +1,413 @@
+KNOWLEDGE_BASE_CSS = """
+        .knowledge-base {
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            height: 100vh;
+            min-height: 0;
+            background: var(--bg);
+        }
+
+        .kb-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            padding: 18px 22px;
+            min-width: 0;
+        }
+
+        .kb-header h2 {
+            margin: 0;
+            font-size: 22px;
+        }
+
+        .kb-path {
+            color: var(--muted);
+            font-size: 14px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .kb-tools {
+            display: grid;
+            grid-template-columns: minmax(220px, 320px) minmax(260px, 420px);
+            gap: 14px;
+            border-bottom: 1px solid var(--line);
+            background: #fbfcfa;
+            padding: 16px 22px;
+        }
+
+        .kb-form {
+            display: grid;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .kb-form-row {
+            display: flex;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .kb-input {
+            width: 100%;
+            min-height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 0 12px;
+            font: inherit;
+        }
+
+        .kb-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+            outline: none;
+        }
+
+        .kb-file-input {
+            width: 100%;
+            min-height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            padding: 8px;
+            font: inherit;
+        }
+
+        .kb-content {
+            min-height: 0;
+            overflow-y: auto;
+            padding: 22px;
+        }
+
+        .kb-browser {
+            display: grid;
+            gap: 10px;
+            max-width: 920px;
+        }
+
+        .kb-entry {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            width: 100%;
+            min-height: 54px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 10px 12px;
+            text-align: left;
+        }
+
+        .kb-entry:hover {
+            background: var(--panel-alt);
+        }
+
+        .kb-entry-main {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .kb-entry-icon {
+            display: grid;
+            place-items: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: #e7f5f2;
+            color: var(--accent-dark);
+            flex: 0 0 auto;
+            font-weight: 900;
+        }
+
+        .kb-entry-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 800;
+        }
+
+        .kb-entry-meta {
+            color: var(--muted);
+            font-size: 13px;
+            flex: 0 0 auto;
+        }
+
+        .kb-empty {
+            width: min(520px, 100%);
+            border: 1px dashed var(--line);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.72);
+            padding: 24px;
+            color: var(--muted);
+        }
+
+        .kb-empty h3 {
+            margin: 0 0 6px;
+            color: var(--text);
+            font-size: 20px;
+        }
+
+        .kb-empty p {
+            margin: 0;
+        }
+"""
+
+KNOWLEDGE_BASE_MOBILE_CSS = """
+            .knowledge-base {
+                grid-template-rows: auto auto minmax(0, 1fr);
+            }
+
+            .kb-header {
+                align-items: flex-start;
+                flex-direction: column;
+                padding: 12px;
+            }
+
+            .kb-tools {
+                grid-template-columns: 1fr;
+                padding: 12px;
+            }
+
+            .kb-form-row {
+                flex-direction: column;
+            }
+
+            .kb-content {
+                padding: 12px;
+            }
+"""
+
+KNOWLEDGE_BASE_BINDINGS = """
+        const kbPath = document.querySelector("#kb-path");
+        const kbUpButton = document.querySelector("#kb-up");
+        const kbBrowser = document.querySelector("#kb-browser");
+        const kbStatus = document.querySelector("#kb-status");
+        const kbFolderForm = document.querySelector("#kb-folder-form");
+        const kbFolderName = document.querySelector("#kb-folder-name");
+        const kbUploadForm = document.querySelector("#kb-upload-form");
+        const kbFile = document.querySelector("#kb-file");
+
+        state.knowledgeBase = {
+            path: "",
+            parent: "",
+            folders: [],
+            files: [],
+            loaded: false
+        };
+"""
+
+KNOWLEDGE_BASE_SCRIPT = """
+        function formatBytes(size) {
+            if (size < 1024) {
+                return `${size} B`;
+            }
+            if (size < 1024 * 1024) {
+                return `${(size / 1024).toFixed(1)} KB`;
+            }
+            return `${(size / 1024 / 1024).toFixed(1)} MB`;
+        }
+
+        function setKnowledgeStatus(message, isError = false) {
+            kbStatus.textContent = message;
+            kbStatus.classList.toggle("error", isError);
+        }
+
+        function renderKnowledgeBase() {
+            const data = state.knowledgeBase;
+            kbPath.textContent = data.path ? `/${data.path}` : "/";
+            kbUpButton.disabled = !data.path;
+
+            const parentEntry = data.path ? `
+                <button class="kb-entry" type="button" data-kb-path="${escapeHtml(data.parent)}" data-kb-kind="folder">
+                    <span class="kb-entry-main">
+                        <span class="kb-entry-icon" aria-hidden="true">..</span>
+                        <span class="kb-entry-name">Parent folder</span>
+                    </span>
+                    <span class="kb-entry-meta">Folder</span>
+                </button>
+            ` : "";
+
+            const folders = data.folders.map((folder) => `
+                <button class="kb-entry" type="button" data-kb-path="${escapeHtml(folder.path)}" data-kb-kind="folder">
+                    <span class="kb-entry-main">
+                        <span class="kb-entry-icon" aria-hidden="true">D</span>
+                        <span class="kb-entry-name">${escapeHtml(folder.name)}</span>
+                    </span>
+                    <span class="kb-entry-meta">Folder</span>
+                </button>
+            `).join("");
+
+            const files = data.files.map((file) => `
+                <div class="kb-entry">
+                    <span class="kb-entry-main">
+                        <span class="kb-entry-icon" aria-hidden="true">T</span>
+                        <span class="kb-entry-name">${escapeHtml(file.name)}</span>
+                    </span>
+                    <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
+                </div>
+            `).join("");
+
+            if (!parentEntry && !folders && !files) {
+                kbBrowser.innerHTML = `
+                    <section class="kb-empty">
+                        <h3>No files yet</h3>
+                        <p>Create folders and upload .txt files to build this knowledge base.</p>
+                    </section>
+                `;
+                return;
+            }
+
+            kbBrowser.innerHTML = parentEntry + folders + files;
+            kbBrowser.querySelectorAll("[data-kb-kind='folder']").forEach((button) => {
+                button.addEventListener("click", () => loadKnowledgeBase(button.dataset.kbPath || ""));
+            });
+        }
+
+        async function loadKnowledgeBase(path = "") {
+            setKnowledgeStatus("Loading...");
+            try {
+                const response = await fetch(`/api/knowledge-base?path=${encodeURIComponent(path)}`);
+                if (!response.ok) {
+                    throw new Error("Could not load the knowledge base folder.");
+                }
+                state.knowledgeBase = {
+                    ...(await response.json()),
+                    loaded: true
+                };
+                renderKnowledgeBase();
+                setKnowledgeStatus("");
+            } catch (error) {
+                setKnowledgeStatus(error.message, true);
+            }
+        }
+
+        async function createKnowledgeFolder(event) {
+            event.preventDefault();
+            const name = kbFolderName.value.trim();
+            if (!name) {
+                setKnowledgeStatus("Write a folder name first.", true);
+                kbFolderName.focus();
+                return;
+            }
+
+            setKnowledgeStatus("Creating folder...");
+            try {
+                const response = await fetch("/api/knowledge-base/folders", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ parent: state.knowledgeBase.path || "", name })
+                });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({ detail: "Could not create folder." }));
+                    throw new Error(data.detail || "Could not create folder.");
+                }
+                state.knowledgeBase = {
+                    ...(await response.json()),
+                    loaded: true
+                };
+                kbFolderName.value = "";
+                renderKnowledgeBase();
+                setKnowledgeStatus("Folder created.");
+            } catch (error) {
+                setKnowledgeStatus(error.message, true);
+            }
+        }
+
+        async function uploadKnowledgeFile(event) {
+            event.preventDefault();
+            const file = kbFile.files[0];
+            if (!file) {
+                setKnowledgeStatus("Choose a .txt file first.", true);
+                return;
+            }
+            if (!file.name.toLowerCase().endsWith(".txt")) {
+                setKnowledgeStatus("Only .txt files can be uploaded.", true);
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("parent", state.knowledgeBase.path || "");
+            formData.append("file", file);
+
+            setKnowledgeStatus("Uploading file...");
+            try {
+                const response = await fetch("/api/knowledge-base/files", {
+                    method: "POST",
+                    body: formData
+                });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({ detail: "Could not upload file." }));
+                    throw new Error(data.detail || "Could not upload file.");
+                }
+                state.knowledgeBase = {
+                    ...(await response.json()),
+                    loaded: true
+                };
+                kbFile.value = "";
+                renderKnowledgeBase();
+                setKnowledgeStatus("File uploaded.");
+            } catch (error) {
+                setKnowledgeStatus(error.message, true);
+            }
+        }
+"""
+
+KNOWLEDGE_BASE_EVENTS = """
+        kbUpButton.addEventListener("click", () => loadKnowledgeBase(state.knowledgeBase.parent || ""));
+        kbFolderForm.addEventListener("submit", createKnowledgeFolder);
+        kbUploadForm.addEventListener("submit", uploadKnowledgeFile);
+"""
+
+
+def render_knowledge_menu_button() -> str:
+    return """
+            <button class="menu-button" type="button" data-menu="knowledge" aria-controls="knowledge-panel">
+                <span class="menu-icon" aria-hidden="true">~</span>
+                <span>Knowledge Base</span>
+            </button>"""
+
+
+def render_knowledge_panel() -> str:
+    return """
+            <section class="menu-panel" id="knowledge-panel" data-panel="knowledge">
+                <section class="knowledge-base">
+                    <header class="kb-header">
+                        <div>
+                            <h2>Knowledge Base</h2>
+                            <div class="kb-path" id="kb-path">/</div>
+                        </div>
+                        <button id="kb-up" type="button">Up folder</button>
+                    </header>
+
+                    <section class="kb-tools">
+                        <form class="kb-form" id="kb-folder-form">
+                            <label for="kb-folder-name">Create folder</label>
+                            <div class="kb-form-row">
+                                <input class="kb-input" id="kb-folder-name" type="text" placeholder="Folder name">
+                                <button type="submit">Create</button>
+                            </div>
+                        </form>
+
+                        <form class="kb-form" id="kb-upload-form">
+                            <label for="kb-file">Upload text file</label>
+                            <div class="kb-form-row">
+                                <input class="kb-file-input" id="kb-file" type="file" accept=".txt,text/plain">
+                                <button type="submit">Upload</button>
+                            </div>
+                        </form>
+                    </section>
+
+                    <section class="kb-content">
+                        <div class="kb-browser" id="kb-browser"></div>
+                        <div class="status" id="kb-status"></div>
+                    </section>
+                </section>
+            </section>"""

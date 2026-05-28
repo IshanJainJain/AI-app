@@ -1,6 +1,16 @@
 from html import escape
 import json
 
+from knowledge_base_templates import (
+    KNOWLEDGE_BASE_BINDINGS,
+    KNOWLEDGE_BASE_CSS,
+    KNOWLEDGE_BASE_EVENTS,
+    KNOWLEDGE_BASE_MOBILE_CSS,
+    KNOWLEDGE_BASE_SCRIPT,
+    render_knowledge_menu_button,
+    render_knowledge_panel,
+)
+
 
 def render_page(threads, messages, active_thread_id: int, global_context: str, model: str) -> str:
     initial_state = json.dumps({
@@ -86,6 +96,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             background: transparent;
             color: #dbe8e2;
             padding: 6px 4px;
+            text-align: center;
             font-size: 12px;
             line-height: 1.1;
         }}
@@ -127,33 +138,6 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             grid-template-columns: 300px minmax(0, 1fr);
             height: 100vh;
             min-height: 0;
-        }}
-
-        .placeholder-panel {{
-            display: grid;
-            place-items: center;
-            height: 100%;
-            padding: 24px;
-        }}
-
-        .placeholder-panel section {{
-            width: min(520px, 100%);
-            border: 1px dashed var(--line);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.72);
-            padding: 24px;
-            text-align: center;
-            color: var(--muted);
-        }}
-
-        .placeholder-panel h2 {{
-            margin: 0 0 8px;
-            color: var(--text);
-            font-size: 22px;
-        }}
-
-        .placeholder-panel p {{
-            margin: 0;
         }}
 
         .sidebar {{
@@ -454,6 +438,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             color: var(--danger);
         }}
 
+        {KNOWLEDGE_BASE_CSS}
+
         @media (max-width: 800px) {{
             body {{
                 overflow: hidden;
@@ -574,6 +560,9 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             .composer .actions {{
                 margin-top: 8px;
             }}
+
+            {KNOWLEDGE_BASE_MOBILE_CSS}
+
         }}
     </style>
 </head>
@@ -585,10 +574,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 <span class="menu-icon" aria-hidden="true">#</span>
                 <span>Chat</span>
             </button>
-            <button class="menu-button" type="button" data-menu="library" aria-controls="library-panel">
-                <span class="menu-icon" aria-hidden="true">~</span>
-                <span>Library</span>
-            </button>
+            {render_knowledge_menu_button()}
         </nav>
 
         <div class="menu-content">
@@ -639,12 +625,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 </div>
             </section>
 
-            <section class="menu-panel placeholder-panel" id="library-panel" data-panel="library">
-                <section>
-                    <h2>Library</h2>
-                    <p>This menu is ready for the library feature.</p>
-                </section>
-            </section>
+            {render_knowledge_panel()}
         </div>
     </main>
 
@@ -666,6 +647,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         const globalContextStatus = document.querySelector("#global-context-status");
         const menuButtons = document.querySelectorAll(".menu-button");
         const menuPanels = document.querySelectorAll(".menu-panel");
+        {KNOWLEDGE_BASE_BINDINGS}
 
         function showMenu(menu) {{
             menuButtons.forEach((button) => {{
@@ -676,6 +658,9 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             menuPanels.forEach((panel) => {{
                 panel.classList.toggle("active", panel.dataset.panel === menu);
             }});
+            if (menu === "knowledge" && !state.knowledgeBase.loaded) {{
+                loadKnowledgeBase("");
+            }}
         }}
 
         function escapeHtml(value) {{
@@ -691,6 +676,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         function activeThread() {{
             return state.threads.find((thread) => thread.id === state.activeThreadId) || state.threads[0];
         }}
+
+        {KNOWLEDGE_BASE_SCRIPT}
 
         function setStatus(message, isError = false) {{
             statusText.textContent = message;
@@ -886,6 +873,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         saveGlobalContextButton.addEventListener("click", saveGlobalContext);
         renameForm.addEventListener("submit", renameThread);
         sendButton.addEventListener("click", sendPrompt);
+        {KNOWLEDGE_BASE_EVENTS}
         menuButtons.forEach((button) => {{
             button.addEventListener("click", () => showMenu(button.dataset.menu));
         }});
