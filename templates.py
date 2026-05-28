@@ -45,9 +45,115 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
         .app {{
             display: grid;
+            grid-template-columns: 78px minmax(0, 1fr);
+            height: 100vh;
+            min-height: 0;
+        }}
+
+        .menu-rail {{
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: stretch;
+            border-right: 1px solid #cfd8d2;
+            background: #111c18;
+            padding: 12px 8px;
+            min-width: 0;
+            min-height: 0;
+        }}
+
+        .menu-mark {{
+            display: grid;
+            place-items: center;
+            width: 44px;
+            height: 44px;
+            margin: 0 auto 8px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            color: white;
+            font-size: 18px;
+            font-weight: 900;
+        }}
+
+        .menu-button {{
+            display: grid;
+            place-items: center;
+            gap: 4px;
+            width: 100%;
+            min-height: 58px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            background: transparent;
+            color: #dbe8e2;
+            padding: 6px 4px;
+            font-size: 12px;
+            line-height: 1.1;
+        }}
+
+        .menu-button:hover {{
+            border-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.08);
+        }}
+
+        .menu-button.active {{
+            border-color: rgba(255, 255, 255, 0.28);
+            background: #0f766e;
+            color: white;
+        }}
+
+        .menu-icon {{
+            font-size: 20px;
+            line-height: 1;
+        }}
+
+        .menu-content {{
+            min-width: 0;
+            min-height: 0;
+        }}
+
+        .menu-panel {{
+            display: none;
+            min-width: 0;
+            min-height: 0;
+            height: 100vh;
+        }}
+
+        .menu-panel.active {{
+            display: block;
+        }}
+
+        .chat-layout {{
+            display: grid;
             grid-template-columns: 300px minmax(0, 1fr);
             height: 100vh;
             min-height: 0;
+        }}
+
+        .placeholder-panel {{
+            display: grid;
+            place-items: center;
+            height: 100%;
+            padding: 24px;
+        }}
+
+        .placeholder-panel section {{
+            width: min(520px, 100%);
+            border: 1px dashed var(--line);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.72);
+            padding: 24px;
+            text-align: center;
+            color: var(--muted);
+        }}
+
+        .placeholder-panel h2 {{
+            margin: 0 0 8px;
+            color: var(--text);
+            font-size: 22px;
+        }}
+
+        .placeholder-panel p {{
+            margin: 0;
         }}
 
         .sidebar {{
@@ -354,6 +460,32 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             }}
 
             .app {{
+                grid-template-columns: 60px minmax(0, 1fr);
+                height: 100vh;
+                min-height: 0;
+            }}
+
+            .menu-rail {{
+                padding: 8px 6px;
+            }}
+
+            .menu-mark {{
+                width: 38px;
+                height: 38px;
+                font-size: 16px;
+            }}
+
+            .menu-button {{
+                min-height: 52px;
+                font-size: 11px;
+                padding: 5px 2px;
+            }}
+
+            .menu-icon {{
+                font-size: 18px;
+            }}
+
+            .chat-layout {{
                 grid-template-columns: 1fr;
                 grid-template-rows: minmax(200px, 30vh) minmax(0, 1fr);
                 height: 100vh;
@@ -447,48 +579,84 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 </head>
 <body>
     <main class="app">
-        <aside class="sidebar">
-            <div class="brand">
-                <div>
-                    <h1>Local AI App</h1>
-                    <div class="model">Model: {escape(model)}</div>
-                </div>
-                <button class="icon-button" id="new-thread" type="button" title="New conversation">+</button>
-            </div>
-            <details class="global-context">
-                <summary>Global context</summary>
-                <div class="global-context-content">
-                    <label for="global-context">Shared across all conversations</label>
-                    <textarea id="global-context" placeholder="Shared instructions, facts, preferences, or background for every conversation..."></textarea>
-                    <div class="actions">
-                        <button id="save-global-context" type="button">Save context</button>
-                        <span class="status" id="global-context-status"></span>
-                    </div>
-                </div>
-            </details>
-            <nav class="thread-list" id="thread-list" aria-label="Conversations"></nav>
-        </aside>
+        <nav class="menu-rail" aria-label="Main menu">
+            <div class="menu-mark" aria-hidden="true">AI</div>
+            <button class="menu-button active" type="button" data-menu="chat" aria-controls="chat-panel" aria-current="page">
+                <span class="menu-icon" aria-hidden="true">#</span>
+                <span>Chat</span>
+            </button>
+            <button class="menu-button" type="button" data-menu="history" aria-controls="history-panel">
+                <span class="menu-icon" aria-hidden="true">*</span>
+                <span>History</span>
+            </button>
+            <button class="menu-button" type="button" data-menu="settings" aria-controls="settings-panel">
+                <span class="menu-icon" aria-hidden="true">~</span>
+                <span>Settings</span>
+            </button>
+        </nav>
 
-        <section class="workspace">
-            <header class="topbar">
-                <h2 class="active-title" id="active-title">Conversation</h2>
-                <form class="rename-form" id="rename-form">
-                    <input class="rename-input" id="rename-input" type="text" aria-label="Conversation title">
-                    <button type="submit">Rename</button>
-                </form>
-            </header>
+        <div class="menu-content">
+            <section class="menu-panel active" id="chat-panel" data-panel="chat">
+                <div class="chat-layout">
+                    <aside class="sidebar">
+                        <div class="brand">
+                            <div>
+                                <h1>Local AI App</h1>
+                                <div class="model">Model: {escape(model)}</div>
+                            </div>
+                            <button class="icon-button" id="new-thread" type="button" title="New conversation">+</button>
+                        </div>
+                        <details class="global-context">
+                            <summary>Global context</summary>
+                            <div class="global-context-content">
+                                <label for="global-context">Shared across all conversations</label>
+                                <textarea id="global-context" placeholder="Shared instructions, facts, preferences, or background for every conversation..."></textarea>
+                                <div class="actions">
+                                    <button id="save-global-context" type="button">Save context</button>
+                                    <span class="status" id="global-context-status"></span>
+                                </div>
+                            </div>
+                        </details>
+                        <nav class="thread-list" id="thread-list" aria-label="Conversations"></nav>
+                    </aside>
 
-            <section class="messages" id="messages"></section>
+                    <section class="workspace">
+                        <header class="topbar">
+                            <h2 class="active-title" id="active-title">Conversation</h2>
+                            <form class="rename-form" id="rename-form">
+                                <input class="rename-input" id="rename-input" type="text" aria-label="Conversation title">
+                                <button type="submit">Rename</button>
+                            </form>
+                        </header>
 
-            <section class="composer">
-                <label for="prompt">Prompt</label>
-                <textarea id="prompt" placeholder="Continue this conversation..."></textarea>
-                <div class="actions">
-                    <button id="send" type="button">Send prompt</button>
-                    <span class="status" id="status"></span>
+                        <section class="messages" id="messages"></section>
+
+                        <section class="composer">
+                            <label for="prompt">Prompt</label>
+                            <textarea id="prompt" placeholder="Continue this conversation..."></textarea>
+                            <div class="actions">
+                                <button id="send" type="button">Send prompt</button>
+                                <span class="status" id="status"></span>
+                            </div>
+                        </section>
+                    </section>
                 </div>
             </section>
-        </section>
+
+            <section class="menu-panel placeholder-panel" id="history-panel" data-panel="history">
+                <section>
+                    <h2>History</h2>
+                    <p>This menu is ready for a dedicated history view.</p>
+                </section>
+            </section>
+
+            <section class="menu-panel placeholder-panel" id="settings-panel" data-panel="settings">
+                <section>
+                    <h2>Settings</h2>
+                    <p>This menu is ready for app and model settings.</p>
+                </section>
+            </section>
+        </div>
     </main>
 
     <script>
@@ -507,6 +675,19 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         const globalContextBox = document.querySelector("#global-context");
         const saveGlobalContextButton = document.querySelector("#save-global-context");
         const globalContextStatus = document.querySelector("#global-context-status");
+        const menuButtons = document.querySelectorAll(".menu-button");
+        const menuPanels = document.querySelectorAll(".menu-panel");
+
+        function showMenu(menu) {{
+            menuButtons.forEach((button) => {{
+                const isActive = button.dataset.menu === menu;
+                button.classList.toggle("active", isActive);
+                button.setAttribute("aria-current", isActive ? "page" : "false");
+            }});
+            menuPanels.forEach((panel) => {{
+                panel.classList.toggle("active", panel.dataset.panel === menu);
+            }});
+        }}
 
         function escapeHtml(value) {{
             return String(value || "").replace(/[&<>"']/g, (char) => ({{
@@ -716,6 +897,9 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         saveGlobalContextButton.addEventListener("click", saveGlobalContext);
         renameForm.addEventListener("submit", renameThread);
         sendButton.addEventListener("click", sendPrompt);
+        menuButtons.forEach((button) => {{
+            button.addEventListener("click", () => showMenu(button.dataset.menu));
+        }});
         promptBox.addEventListener("keydown", (event) => {{
             if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {{
                 sendPrompt();
