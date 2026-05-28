@@ -585,13 +585,9 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 <span class="menu-icon" aria-hidden="true">#</span>
                 <span>Chat</span>
             </button>
-            <button class="menu-button" type="button" data-menu="history" aria-controls="history-panel">
-                <span class="menu-icon" aria-hidden="true">*</span>
-                <span>History</span>
-            </button>
-            <button class="menu-button" type="button" data-menu="settings" aria-controls="settings-panel">
+            <button class="menu-button" type="button" data-menu="library" aria-controls="library-panel">
                 <span class="menu-icon" aria-hidden="true">~</span>
-                <span>Settings</span>
+                <span>Library</span>
             </button>
         </nav>
 
@@ -643,17 +639,10 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 </div>
             </section>
 
-            <section class="menu-panel placeholder-panel" id="history-panel" data-panel="history">
+            <section class="menu-panel placeholder-panel" id="library-panel" data-panel="library">
                 <section>
-                    <h2>History</h2>
-                    <p>This menu is ready for a dedicated history view.</p>
-                </section>
-            </section>
-
-            <section class="menu-panel placeholder-panel" id="settings-panel" data-panel="settings">
-                <section>
-                    <h2>Settings</h2>
-                    <p>This menu is ready for app and model settings.</p>
+                    <h2>Library</h2>
+                    <p>This menu is ready for the library feature.</p>
                 </section>
             </section>
         </div>
