@@ -2,6 +2,8 @@
 
 FastAPI app with persistent threads, global context, and an Ollama-compatible local LLM backend.
 
+See [RAG.md](RAG.md) for the Knowledge Base ingestion pipeline, FAISS vector storage, chunking behavior, and tuning parameters.
+
 ## Move To A VM
 
 Copy this project folder to the VM. Include `history.db` if you want to keep existing conversations and global context.
