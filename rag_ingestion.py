@@ -201,3 +201,23 @@ def store_vectors(
         json.dumps(existing_chunks + records, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def chunks_for_document(knowledge_base_dir: Path, relative_path: str) -> dict:
+    chunks_path = knowledge_base_dir / VECTOR_STORE_NAME / "chunks.json"
+    if not chunks_path.exists():
+        return {"source": relative_path, "chunks": []}
+
+    records = json.loads(chunks_path.read_text(encoding="utf-8"))
+    chunks = [
+        {
+            "id": record["id"],
+            "chunk": record["metadata"].get("chunk", 0),
+            "text": record["text"],
+            "metadata": record["metadata"],
+        }
+        for record in records
+        if record.get("metadata", {}).get("source") == relative_path
+    ]
+    chunks.sort(key=lambda item: item["chunk"])
+    return {"source": relative_path, "chunks": chunks}

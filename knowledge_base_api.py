@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from rag_ingestion import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
+    chunks_for_document,
     ingest_document,
     supported_document_types,
 )
@@ -95,6 +96,16 @@ def knowledge_payload(relative_path: str = ""):
 @router.get("")
 async def api_get_knowledge_base(path: str = ""):
     return knowledge_payload(path)
+
+
+@router.get("/files/chunks")
+async def api_get_document_chunks(path: str):
+    document_path = knowledge_path(path)
+    if not document_path.exists() or not document_path.is_file():
+        raise HTTPException(status_code=404, detail="Document not found")
+    if Path(document_path.name).suffix.lower() not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="That file type is not indexed")
+    return chunks_for_document(KNOWLEDGE_BASE_DIR, relative_knowledge_path(document_path))
 
 
 @router.post("/folders")

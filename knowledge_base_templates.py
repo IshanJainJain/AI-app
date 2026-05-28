@@ -158,6 +158,55 @@ KNOWLEDGE_BASE_CSS = """
         .kb-empty p {
             margin: 0;
         }
+
+        .kb-chunk-view {
+            display: grid;
+            gap: 14px;
+            max-width: 980px;
+        }
+
+        .kb-chunk-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            padding: 12px;
+        }
+
+        .kb-chunk-title {
+            min-width: 0;
+        }
+
+        .kb-chunk-title h3 {
+            margin: 0 0 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 18px;
+        }
+
+        .kb-chunk-card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            overflow: hidden;
+        }
+
+        .kb-chunk-card header {
+            border-bottom: 1px solid var(--line);
+            background: rgba(15, 118, 110, 0.08);
+            color: var(--muted);
+            padding: 10px 12px;
+            font-size: 13px;
+            font-weight: 800;
+        }
+
+        .kb-chunk-card pre {
+            padding: 12px;
+        }
 """
 
 KNOWLEDGE_BASE_MOBILE_CSS = """
@@ -246,13 +295,13 @@ KNOWLEDGE_BASE_SCRIPT = """
             `).join("");
 
             const files = data.files.map((file) => `
-                <div class="kb-entry">
+                <button class="kb-entry" type="button" data-kb-path="${escapeHtml(file.path)}" data-kb-kind="file">
                     <span class="kb-entry-main">
                         <span class="kb-entry-icon" aria-hidden="true">T</span>
                         <span class="kb-entry-name">${escapeHtml(file.name)}</span>
                     </span>
                     <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
-                </div>
+                </button>
             `).join("");
 
             if (!parentEntry && !folders && !files) {
@@ -269,6 +318,56 @@ KNOWLEDGE_BASE_SCRIPT = """
             kbBrowser.querySelectorAll("[data-kb-kind='folder']").forEach((button) => {
                 button.addEventListener("click", () => loadKnowledgeBase(button.dataset.kbPath || ""));
             });
+            kbBrowser.querySelectorAll("[data-kb-kind='file']").forEach((button) => {
+                button.addEventListener("click", () => loadDocumentChunks(button.dataset.kbPath || ""));
+            });
+        }
+
+        function renderDocumentChunks(data) {
+            const chunks = data.chunks || [];
+            const chunkCards = chunks.map((chunk, index) => `
+                <article class="kb-chunk-card">
+                    <header>Chunk ${index + 1}</header>
+                    <pre>${escapeHtml(chunk.text)}</pre>
+                </article>
+            `).join("");
+
+            kbBrowser.innerHTML = `
+                <section class="kb-chunk-view">
+                    <div class="kb-chunk-header">
+                        <div class="kb-chunk-title">
+                            <h3>${escapeHtml(data.source)}</h3>
+                            <div class="kb-entry-meta">${chunks.length} chunks</div>
+                        </div>
+                        <button id="kb-back-to-folder" type="button">Back</button>
+                    </div>
+                    ${chunkCards || `
+                        <section class="kb-empty">
+                            <h3>No chunks found</h3>
+                            <p>This document has not been indexed yet.</p>
+                        </section>
+                    `}
+                </section>
+            `;
+            document.querySelector("#kb-back-to-folder").addEventListener("click", () => {
+                renderKnowledgeBase();
+                setKnowledgeStatus("");
+            });
+        }
+
+        async function loadDocumentChunks(path) {
+            setKnowledgeStatus("Loading chunks...");
+            try {
+                const response = await fetch(`/api/knowledge-base/files/chunks?path=${encodeURIComponent(path)}`);
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({ detail: "Could not load chunks." }));
+                    throw new Error(data.detail || "Could not load chunks.");
+                }
+                renderDocumentChunks(await response.json());
+                setKnowledgeStatus("");
+            } catch (error) {
+                setKnowledgeStatus(error.message, true);
+            }
         }
 
         async function loadKnowledgeBase(path = "") {
