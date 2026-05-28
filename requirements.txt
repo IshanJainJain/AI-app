@@ -1,4 +1,8 @@
+faiss-cpu
 fastapi
 httpx
+numpy
+pypdf
 python-multipart
+python-docx
 uvicorn

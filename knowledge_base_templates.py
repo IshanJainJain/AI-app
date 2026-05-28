@@ -259,7 +259,7 @@ KNOWLEDGE_BASE_SCRIPT = """
                 kbBrowser.innerHTML = `
                     <section class="kb-empty">
                         <h3>No files yet</h3>
-                        <p>Create folders and upload .txt files to build this knowledge base.</p>
+                        <p>Create folders and upload documents to build this knowledge base.</p>
                     </section>
                 `;
                 return;
@@ -325,11 +325,12 @@ KNOWLEDGE_BASE_SCRIPT = """
             event.preventDefault();
             const file = kbFile.files[0];
             if (!file) {
-                setKnowledgeStatus("Choose a .txt file first.", true);
+                setKnowledgeStatus("Choose a document first.", true);
                 return;
             }
-            if (!file.name.toLowerCase().endsWith(".txt")) {
-                setKnowledgeStatus("Only .txt files can be uploaded.", true);
+            const allowedExtensions = [".txt", ".md", ".pdf", ".docx"];
+            if (!allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension))) {
+                setKnowledgeStatus("Supported files: .txt, .md, .pdf, .docx.", true);
                 return;
             }
 
@@ -353,7 +354,8 @@ KNOWLEDGE_BASE_SCRIPT = """
                 };
                 kbFile.value = "";
                 renderKnowledgeBase();
-                setKnowledgeStatus("File uploaded.");
+                const chunks = state.knowledgeBase.ingestion ? state.knowledgeBase.ingestion.chunks : 0;
+                setKnowledgeStatus(`Document uploaded and indexed${chunks ? ` (${chunks} chunks)` : ""}.`);
             } catch (error) {
                 setKnowledgeStatus(error.message, true);
             }
@@ -397,9 +399,9 @@ def render_knowledge_panel() -> str:
                         </form>
 
                         <form class="kb-form" id="kb-upload-form">
-                            <label for="kb-file">Upload text file</label>
+                            <label for="kb-file">Upload document</label>
                             <div class="kb-form-row">
-                                <input class="kb-file-input" id="kb-file" type="file" accept=".txt,text/plain">
+                                <input class="kb-file-input" id="kb-file" type="file" accept=".txt,.md,.pdf,.docx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
                                 <button type="submit">Upload</button>
                             </div>
                         </form>

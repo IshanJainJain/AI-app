@@ -1,13 +1,21 @@
 import re
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from rag_ingestion import (
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    ingest_document,
+    supported_document_types,
+)
+
 router = APIRouter(prefix="/api/knowledge-base", tags=["knowledge-base"])
 
 KNOWLEDGE_BASE_DIR = Path(__file__).with_name("knowledge_base")
 SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$")
+MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_BYTES", str(50 * 1024 * 1024)))
 
 
 class KnowledgeFolderRequest(BaseModel):
@@ -110,16 +118,32 @@ async def api_upload_knowledge_file(parent: str = Form(""), file: UploadFile = F
         raise HTTPException(status_code=404, detail="Parent folder not found")
 
     filename = validate_entry_name(file.filename or "")
-    if not filename.lower().endswith(".txt"):
-        raise HTTPException(status_code=400, detail="Only .txt files can be uploaded")
+    if Path(filename).suffix.lower() not in SUPPORTED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Supported document types: {supported_document_types()}",
+        )
 
     content = await file.read()
-    if len(content) > 2_000_000:
-        raise HTTPException(status_code=400, detail="Text files must be 2 MB or smaller")
+    if len(content) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=400, detail="Document is larger than the configured limit")
 
     target = parent_path / filename
     if target.exists():
         raise HTTPException(status_code=409, detail="A folder or file already exists with that name")
 
     target.write_bytes(content)
-    return knowledge_payload(parent)
+    try:
+        ingestion = await ingest_document(
+            KNOWLEDGE_BASE_DIR,
+            target,
+            relative_knowledge_path(target),
+            content,
+        )
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Document ingestion failed: {exc}") from exc
+
+    payload = knowledge_payload(parent)
+    payload["ingestion"] = ingestion
+    return payload
