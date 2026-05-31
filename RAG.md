@@ -10,7 +10,7 @@ When a user uploads a document in the Knowledge Base:
 2. The file is validated for name, type, size, and target folder.
 3. The file is written into `knowledge_base/`.
 4. The document is parsed into plain text.
-5. The text is split into overlapping chunks.
+5. The text is split into semantic chunks by the local chunking LLM.
 6. Each chunk is embedded with a local Ollama embedding model.
 7. The embeddings are normalized and appended to a FAISS index.
 8. Chunk text and metadata are written to JSON alongside the FAISS index.
@@ -87,7 +87,8 @@ knowledge_base/.vector_store/chunks.json
     "source": "folder/policy.pdf",
     "chunk": 0,
     "sha256": "document hash",
-    "embedding_model": "nomic-embed-text"
+    "embedding_model": "nomic-embed-text",
+    "chunking_model": "gemma3:1b"
   }
 }
 ```
@@ -128,25 +129,29 @@ Implemented in `parse_document()` in `rag_ingestion.py`.
 
 The parser converts each uploaded document into plain text. If no text can be extracted, ingestion fails.
 
-### 3. Chunking
+### 3. Agentic Chunking
 
-Implemented in `split_text()` and `recursive_split()` in `rag_ingestion.py`.
+Implemented in `split_text()`, `batch_paragraphs()`, and `agentic_chunk_batch()` in `rag_ingestion.py`.
 
-The splitter is a local recursive character splitter inspired by `RecursiveCharacterTextSplitter`. It tries separators in this order:
+The pipeline now uses local LLM-assisted agentic chunking with `gemma3:1b` by default. Instead of splitting only by fixed character windows, the document is first batched into paragraph groups and then the local model is asked to group related clauses, definitions, exceptions, and procedures into semantically coherent chunks.
+
+The chunking prompt tells the model to:
+
+- preserve original wording exactly
+- avoid summaries or rewrites
+- keep related policy clauses together
+- target the configured chunk size
+- return strict JSON in the shape `{"chunks": [...]}`
+
+For large files, the full document is not sent to the LLM at once. The parser creates paragraph batches up to `AGENTIC_CHUNK_MAX_INPUT_CHARS`, then chunks each batch independently. This keeps the prompt inside the local model context window and makes ingestion work incrementally on large company documents.
+
+If the local model fails, times out, or returns malformed JSON, ingestion falls back to the deterministic recursive splitter. That fallback tries separators in this order:
 
 ```python
 ["\n\n", "\n", ". ", " ", ""]
 ```
 
-This means it prefers to preserve:
-
-1. paragraphs
-2. lines
-3. sentence-ish boundaries
-4. word boundaries
-5. raw character windows as a final fallback
-
-After recursive splitting, adjacent pieces are merged up to the configured chunk size, and overlap is carried from the previous chunk into the next chunk.
+This fallback exists to keep document upload usable, but the primary chunking path is agentic chunking through `gemma3:1b`.
 
 ### 4. Embedding
 
@@ -239,6 +244,122 @@ Impact of changing:
 - Higher values reduce timeout failures on slow machines.
 - Lower values fail faster when Ollama is stuck or unavailable.
 
+### `OLLAMA_AGENTIC_CHUNK_URL`
+
+Default:
+
+```text
+http://localhost:11434/api/generate
+```
+
+Purpose:
+Controls where agentic chunking requests are sent.
+
+Why this default:
+It uses the local Ollama generation endpoint, so policy text stays on the VM.
+
+Impact of changing:
+- Pointing this to a remote endpoint may expose confidential policy text.
+- Pointing it to a faster local Ollama host can improve ingestion speed.
+
+### `AGENTIC_CHUNK_MODEL`
+
+Default:
+
+```text
+gemma3:1b
+```
+
+Purpose:
+Controls which local LLM decides semantic chunk boundaries.
+
+Why this default:
+You already have `gemma3:1b` downloaded locally, and it is lightweight enough for VM usage. It is used only to decide chunk boundaries, not to answer with or store policy content externally.
+
+Impact of changing:
+- A stronger local model may create cleaner semantic chunks.
+- A larger model may slow ingestion substantially.
+- A weaker model may return malformed JSON more often, causing fallback chunking.
+
+### `AGENTIC_CHUNK_TIMEOUT_SECONDS`
+
+Default:
+
+```text
+300
+```
+
+Purpose:
+Maximum time allowed for each agentic chunking request.
+
+Why this default:
+`gemma3:1b` may be running on a CPU VM, and large paragraph batches can take time.
+
+Impact of changing:
+- Higher values reduce timeout failures on slow hardware.
+- Lower values fail faster and use fallback splitting more often.
+
+### `AGENTIC_CHUNK_MAX_INPUT_CHARS`
+
+Default:
+
+```text
+8000
+```
+
+Purpose:
+Maximum amount of parsed text sent to the chunking LLM in one request.
+
+Why this default:
+It keeps each chunking prompt small enough for a local small model while still giving enough surrounding policy context to make good grouping decisions.
+
+Impact of changing:
+- Higher values give the model more context, but increase latency and context-window pressure.
+- Lower values are faster and more reliable, but can split related sections across batches before the LLM sees them.
+
+### `AGENTIC_CHUNK_TARGET_CHARS`
+
+Default:
+
+```text
+1200
+```
+
+Purpose:
+Target chunk size, measured in characters, that the LLM is asked to aim for.
+
+Why this default:
+It is large enough to preserve meaningful policy context but small enough to keep embeddings focused. Policy documents often contain clauses, exceptions, and definitions that need nearby context.
+
+Impact of changing:
+- Smaller targets:
+  - More precise retrieval.
+  - More chunks and embeddings.
+  - More storage and slower ingestion.
+  - Higher risk of losing context around a policy clause.
+- Larger targets:
+  - Better context preservation.
+  - Fewer embeddings and faster ingestion.
+  - Retrieval may become less precise because each vector represents broader text.
+
+### `AGENTIC_CHUNK_MAX_CHARS`
+
+Default:
+
+```text
+1800
+```
+
+Purpose:
+Hard-ish maximum chunk size. If the LLM returns a chunk larger than this, the code deterministically splits it.
+
+Why this default:
+It gives `gemma3:1b` room to keep a full policy clause together while preventing very large chunks from becoming too broad for retrieval.
+
+Impact of changing:
+- Higher values preserve more context but reduce retrieval precision.
+- Lower values keep chunks focused but can split long clauses or procedural sections.
+
 ### `RAG_CHUNK_SIZE`
 
 Default:
@@ -248,21 +369,11 @@ Default:
 ```
 
 Purpose:
-Maximum target size for text chunks, measured in characters.
-
-Why this default:
-It is large enough to preserve meaningful policy context but small enough to keep embeddings focused. Policy documents often contain clauses, exceptions, and definitions that need nearby context.
+Backward-compatible fallback chunk size. It is also used as the default for `AGENTIC_CHUNK_TARGET_CHARS` if that variable is not set.
 
 Impact of changing:
-- Smaller chunks:
-  - More precise retrieval.
-  - More chunks and embeddings.
-  - More storage and slower ingestion.
-  - Higher risk of losing context around a policy clause.
-- Larger chunks:
-  - Better context preservation.
-  - Fewer embeddings and faster ingestion.
-  - Retrieval may become less precise because each vector represents broader text.
+- Changes fallback chunk size.
+- Also changes the agentic target size unless `AGENTIC_CHUNK_TARGET_CHARS` is explicitly set.
 
 ### `RAG_CHUNK_OVERLAP`
 
@@ -273,20 +384,11 @@ Default:
 ```
 
 Purpose:
-Number of characters copied from the previous chunk into the next chunk.
-
-Why this default:
-Overlap helps preserve continuity when a rule, definition, or exception crosses a chunk boundary.
+Fallback-only overlap used when agentic chunking fails or when a single paragraph must be split deterministically.
 
 Impact of changing:
-- Higher overlap:
-  - Better boundary continuity.
-  - More duplicated text.
-  - More embedding cost and storage.
-- Lower overlap:
-  - Less duplication.
-  - Faster ingestion.
-  - Higher chance of splitting important context across chunks.
+- Higher overlap improves fallback boundary continuity but duplicates text.
+- Lower overlap reduces duplication but can lose fallback context across boundaries.
 
 ### `MAX_DOCUMENT_BYTES`
 
@@ -365,6 +467,7 @@ It does not yet inject retrieved chunks into chat prompts. To complete full RAG 
 - `knowledge_base/` is git-ignored.
 - All parsing, embedding, and vector storage are local if Ollama runs locally.
 - Do not point `OLLAMA_EMBED_URL` at a remote server unless that server is approved to receive confidential company data.
+- Do not point `OLLAMA_AGENTIC_CHUNK_URL` at a remote server unless that server is approved to receive confidential company data.
 - `chunks.json` stores raw text chunks, not just vectors. Treat it as sensitive.
 - `faiss.index` may encode sensitive information indirectly. Treat it as sensitive too.
 
@@ -377,9 +480,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Pull the embedding model:
+Pull the chat/chunking model and the embedding model:
 
 ```bash
+ollama pull gemma3:1b
 ollama pull nomic-embed-text
 ```
 
@@ -390,5 +494,6 @@ OLLAMA_URL=http://localhost:11434/api/generate \
 OLLAMA_MODEL='gemma3:1b' \
 LLM_TIMEOUT_SECONDS=300 \
 OLLAMA_EMBED_MODEL=nomic-embed-text \
+AGENTIC_CHUNK_MODEL=gemma3:1b \
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```

@@ -11,6 +11,12 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
 OLLAMA_EMBED_URL = os.getenv("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 EMBED_TIMEOUT_SECONDS = float(os.getenv("EMBED_TIMEOUT_SECONDS", "120"))
+OLLAMA_CHUNK_URL = os.getenv("OLLAMA_AGENTIC_CHUNK_URL", "http://localhost:11434/api/generate")
+AGENTIC_CHUNK_MODEL = os.getenv("AGENTIC_CHUNK_MODEL", "gemma3:1b")
+AGENTIC_CHUNK_TIMEOUT_SECONDS = float(os.getenv("AGENTIC_CHUNK_TIMEOUT_SECONDS", "300"))
+AGENTIC_CHUNK_MAX_INPUT_CHARS = int(os.getenv("AGENTIC_CHUNK_MAX_INPUT_CHARS", "8000"))
+AGENTIC_CHUNK_TARGET_CHARS = int(os.getenv("AGENTIC_CHUNK_TARGET_CHARS", os.getenv("RAG_CHUNK_SIZE", "1200")))
+AGENTIC_CHUNK_MAX_CHARS = int(os.getenv("AGENTIC_CHUNK_MAX_CHARS", "1800"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
 VECTOR_STORE_NAME = ".vector_store"
@@ -51,7 +57,128 @@ def parse_docx(content: bytes) -> str:
     return "\n".join(paragraph.text for paragraph in document.paragraphs).strip()
 
 
-def split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+async def split_text(text: str) -> list[str]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+
+    batches = batch_paragraphs(normalized, AGENTIC_CHUNK_MAX_INPUT_CHARS)
+    chunks = []
+    async with httpx.AsyncClient(timeout=AGENTIC_CHUNK_TIMEOUT_SECONDS) as client:
+        for batch in batches:
+            chunks.extend(await agentic_chunk_batch(client, batch))
+    return [chunk for chunk in chunks if chunk]
+
+
+def normalize_text(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
+def batch_paragraphs(text: str, max_input_chars: int) -> list[str]:
+    paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
+    if not paragraphs:
+        return [text]
+
+    batches = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(paragraph) > max_input_chars:
+            if current:
+                batches.append(current)
+                current = ""
+            batches.extend(fallback_split_text(paragraph, max_input_chars, 0))
+            continue
+
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_input_chars:
+            current = candidate
+        else:
+            batches.append(current)
+            current = paragraph
+
+    if current:
+        batches.append(current)
+    return batches
+
+
+async def agentic_chunk_batch(client: httpx.AsyncClient, text: str) -> list[str]:
+    prompt = build_agentic_chunk_prompt(text)
+    try:
+        response = await client.post(
+            OLLAMA_CHUNK_URL,
+            json={
+                "model": AGENTIC_CHUNK_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": 8192,
+                },
+            },
+        )
+        response.raise_for_status()
+        chunks = parse_agentic_chunk_response(response.json().get("response", ""))
+        if chunks:
+            return normalize_agentic_chunks(chunks)
+    except Exception:
+        pass
+
+    return fallback_split_text(text)
+
+
+def build_agentic_chunk_prompt(text: str) -> str:
+    return f"""You are chunking confidential company knowledge-base text for retrieval.
+
+Group the document into coherent semantic chunks.
+Rules:
+- Preserve the original wording exactly.
+- Do not summarize, rewrite, redact, invent, or omit content.
+- Keep related clauses, definitions, exceptions, and steps together.
+- Prefer chunks around {AGENTIC_CHUNK_TARGET_CHARS} characters.
+- Do not exceed {AGENTIC_CHUNK_MAX_CHARS} characters unless a single paragraph is longer.
+- Return only valid JSON in this exact shape:
+{{"chunks":["first exact chunk","second exact chunk"]}}
+
+Document text:
+\"\"\"
+{text}
+\"\"\""""
+
+
+def parse_agentic_chunk_response(response_text: str) -> list[str]:
+    response_text = response_text.strip()
+    if response_text.startswith("```"):
+        response_text = response_text.strip("`")
+        if response_text.startswith("json"):
+            response_text = response_text[4:].strip()
+
+    start = response_text.find("{")
+    end = response_text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return []
+
+    try:
+        payload = json.loads(response_text[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+
+    chunks = payload.get("chunks", [])
+    if not isinstance(chunks, list):
+        return []
+    return [chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()]
+
+
+def normalize_agentic_chunks(chunks: list[str]) -> list[str]:
+    normalized = []
+    for chunk in chunks:
+        if len(chunk) <= AGENTIC_CHUNK_MAX_CHARS:
+            normalized.append(chunk)
+        else:
+            normalized.extend(fallback_split_text(chunk, AGENTIC_CHUNK_MAX_CHARS, 0))
+    return normalized
+
+
+def fallback_split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip()
     if not normalized:
         return []
@@ -136,7 +263,7 @@ async def ingest_document(
     content: bytes,
 ) -> dict:
     text = parse_document(document_path.name, content)
-    chunks = split_text(text)
+    chunks = await split_text(text)
     if not chunks:
         raise ValueError("Document does not contain extractable text.")
 
@@ -192,6 +319,7 @@ def store_vectors(
                 "chunk": offset,
                 "sha256": document_hash,
                 "embedding_model": OLLAMA_EMBED_MODEL,
+                "chunking_model": AGENTIC_CHUNK_MODEL,
             },
         })
 
