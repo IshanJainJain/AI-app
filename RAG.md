@@ -129,29 +129,39 @@ Implemented in `parse_document()` in `rag_ingestion.py`.
 
 The parser converts each uploaded document into plain text. If no text can be extracted, ingestion fails.
 
-### 3. Agentic Chunking
+### 3. Hybrid Recursive + Agentic Chunking
 
-Implemented in `split_text()`, `batch_paragraphs()`, and `agentic_chunk_batch()` in `rag_ingestion.py`.
+Implemented in `split_text()`, `fallback_split_text()`, and `agentic_refine_chunk_window()` in `rag_ingestion.py`.
 
-The pipeline now uses local LLM-assisted agentic chunking with `gemma3:1b` by default. Instead of splitting only by fixed character windows, the document is first batched into paragraph groups and then the local model is asked to group related clauses, definitions, exceptions, and procedures into semantically coherent chunks.
+The pipeline now starts with deterministic recursive character chunking, then asks local `gemma3:1b` to refine those chunks semantically.
 
-The chunking prompt tells the model to:
+Step by step:
 
-- preserve original wording exactly
-- avoid summaries or rewrites
-- keep related policy clauses together
-- target the configured chunk size
-- return strict JSON in the shape `{"chunks": [...]}`
+1. The full parsed text is normalized.
+2. The normalized text is split with the recursive splitter using `RAG_CHUNK_SIZE=360` and `RAG_CHUNK_OVERLAP=0` by default.
+3. The first 5 recursive chunks are sent to `gemma3:1b`.
+4. Gemma decides whether those chunks should stay separate, be combined, or be broken further.
+5. Gemma can return completed chunks in `final_chunks` and trailing uncertain text in `carryover`.
+6. The next request sends that `carryover` plus the next 5 recursive chunks.
+7. This lets Gemma combine across window boundaries. For example, if 7 recursive chunks belong together, Gemma can carry over the first 5, then combine them after seeing the next 5.
+8. After all windows are processed, any remaining carryover is finalized and embedded.
 
-For large files, the full document is not sent to the LLM at once. The parser creates paragraph batches up to `AGENTIC_CHUNK_MAX_INPUT_CHARS`, then chunks each batch independently. This keeps the prompt inside the local model context window and makes ingestion work incrementally on large company documents.
-
-If the local model fails, times out, or returns malformed JSON, ingestion falls back to the deterministic recursive splitter. That fallback tries separators in this order:
+The recursive fallback splitter tries separators in this order:
 
 ```python
 ["\n\n", "\n", ". ", " ", ""]
 ```
 
-This fallback exists to keep document upload usable, but the primary chunking path is agentic chunking through `gemma3:1b`.
+The chunk refinement prompt tells Gemma to:
+
+- preserve original wording exactly
+- avoid summaries or rewrites
+- keep related policy clauses together
+- decide whether to combine, split, or keep chunks as-is
+- use `carryover` when trailing text may need the next window
+- return strict JSON in the shape `{"final_chunks": [...], "carryover": [...]}`
+
+If Gemma fails, times out, or returns malformed JSON for a window, that window falls back to the already-created recursive chunks so document upload remains usable.
 
 ### 4. Embedding
 
@@ -299,30 +309,31 @@ Impact of changing:
 - Higher values reduce timeout failures on slow hardware.
 - Lower values fail faster and use fallback splitting more often.
 
-### `AGENTIC_CHUNK_MAX_INPUT_CHARS`
+### `AGENTIC_CHUNK_WINDOW_SIZE`
 
 Default:
 
 ```text
-8000
+5
 ```
 
 Purpose:
-Maximum amount of parsed text sent to the chunking LLM in one request.
+Number of recursive chunks sent to Gemma in each refinement request.
 
 Why this default:
-It keeps each chunking prompt small enough for a local small model while still giving enough surrounding policy context to make good grouping decisions.
+Five 360-character chunks give Gemma enough local context to see short policy sections while keeping prompts small for `gemma3:1b`.
 
 Impact of changing:
-- Higher values give the model more context, but increase latency and context-window pressure.
-- Lower values are faster and more reliable, but can split related sections across batches before the LLM sees them.
+- Higher values give Gemma more context per call, but increase latency and context pressure.
+- Lower values make calls faster but increase the chance that related clauses are split across windows.
+- The carryover mechanism still allows cross-window merges, but smaller windows may require more carryover rounds.
 
 ### `AGENTIC_CHUNK_TARGET_CHARS`
 
 Default:
 
 ```text
-1200
+360
 ```
 
 Purpose:
@@ -365,30 +376,31 @@ Impact of changing:
 Default:
 
 ```text
-1200
+360
 ```
 
 Purpose:
-Backward-compatible fallback chunk size. It is also used as the default for `AGENTIC_CHUNK_TARGET_CHARS` if that variable is not set.
+Initial recursive character chunk size. These chunks are the units that get sent to Gemma for refinement.
 
 Impact of changing:
-- Changes fallback chunk size.
-- Also changes the agentic target size unless `AGENTIC_CHUNK_TARGET_CHARS` is explicitly set.
+- Smaller values give Gemma finer-grained pieces to recombine, but create more chunks and more LLM refinement calls.
+- Larger values reduce refinement calls, but Gemma has less control over where to break oversized initial chunks.
+- It also changes the default agentic target size unless `AGENTIC_CHUNK_TARGET_CHARS` is explicitly set.
 
 ### `RAG_CHUNK_OVERLAP`
 
 Default:
 
 ```text
-200
+0
 ```
 
 Purpose:
-Fallback-only overlap used when agentic chunking fails or when a single paragraph must be split deterministically.
+Initial recursive chunk overlap.
 
 Impact of changing:
-- Higher overlap improves fallback boundary continuity but duplicates text.
-- Lower overlap reduces duplication but can lose fallback context across boundaries.
+- `0` avoids duplicated text before Gemma refinement.
+- Higher overlap can preserve boundary context, but it also creates duplicate text that Gemma may need to remove or reconcile.
 
 ### `MAX_DOCUMENT_BYTES`
 

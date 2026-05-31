@@ -14,11 +14,11 @@ EMBED_TIMEOUT_SECONDS = float(os.getenv("EMBED_TIMEOUT_SECONDS", "120"))
 OLLAMA_CHUNK_URL = os.getenv("OLLAMA_AGENTIC_CHUNK_URL", "http://localhost:11434/api/generate")
 AGENTIC_CHUNK_MODEL = os.getenv("AGENTIC_CHUNK_MODEL", "gemma3:1b")
 AGENTIC_CHUNK_TIMEOUT_SECONDS = float(os.getenv("AGENTIC_CHUNK_TIMEOUT_SECONDS", "300"))
-AGENTIC_CHUNK_MAX_INPUT_CHARS = int(os.getenv("AGENTIC_CHUNK_MAX_INPUT_CHARS", "8000"))
-AGENTIC_CHUNK_TARGET_CHARS = int(os.getenv("AGENTIC_CHUNK_TARGET_CHARS", os.getenv("RAG_CHUNK_SIZE", "1200")))
+AGENTIC_CHUNK_TARGET_CHARS = int(os.getenv("AGENTIC_CHUNK_TARGET_CHARS", os.getenv("RAG_CHUNK_SIZE", "360")))
 AGENTIC_CHUNK_MAX_CHARS = int(os.getenv("AGENTIC_CHUNK_MAX_CHARS", "1800"))
-CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
-CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
+AGENTIC_CHUNK_WINDOW_SIZE = int(os.getenv("AGENTIC_CHUNK_WINDOW_SIZE", "5"))
+CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "360"))
+CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "0"))
 VECTOR_STORE_NAME = ".vector_store"
 
 
@@ -62,47 +62,37 @@ async def split_text(text: str) -> list[str]:
     if not normalized:
         return []
 
-    batches = batch_paragraphs(normalized, AGENTIC_CHUNK_MAX_INPUT_CHARS)
-    chunks = []
+    base_chunks = fallback_split_text(normalized, CHUNK_SIZE, CHUNK_OVERLAP)
+    if not base_chunks:
+        return []
+
+    refined_chunks = []
+    carryover = []
     async with httpx.AsyncClient(timeout=AGENTIC_CHUNK_TIMEOUT_SECONDS) as client:
-        for batch in batches:
-            chunks.extend(await agentic_chunk_batch(client, batch))
-    return [chunk for chunk in chunks if chunk]
+        for start in range(0, len(base_chunks), AGENTIC_CHUNK_WINDOW_SIZE):
+            window = base_chunks[start:start + AGENTIC_CHUNK_WINDOW_SIZE]
+            result = await agentic_refine_chunk_window(client, carryover, window)
+            if result is None:
+                refined_chunks.extend(carryover + window)
+                carryover = []
+                continue
+            refined_chunks.extend(result["final_chunks"])
+            carryover = result["carryover"]
+
+    refined_chunks.extend(carryover)
+    return normalize_agentic_chunks([chunk for chunk in refined_chunks if chunk])
 
 
 def normalize_text(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 
-def batch_paragraphs(text: str, max_input_chars: int) -> list[str]:
-    paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
-    if not paragraphs:
-        return [text]
-
-    batches = []
-    current = ""
-    for paragraph in paragraphs:
-        if len(paragraph) > max_input_chars:
-            if current:
-                batches.append(current)
-                current = ""
-            batches.extend(fallback_split_text(paragraph, max_input_chars, 0))
-            continue
-
-        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
-        if len(candidate) <= max_input_chars:
-            current = candidate
-        else:
-            batches.append(current)
-            current = paragraph
-
-    if current:
-        batches.append(current)
-    return batches
-
-
-async def agentic_chunk_batch(client: httpx.AsyncClient, text: str) -> list[str]:
-    prompt = build_agentic_chunk_prompt(text)
+async def agentic_refine_chunk_window(
+    client: httpx.AsyncClient,
+    carryover: list[str],
+    window: list[str],
+) -> dict | None:
+    prompt = build_agentic_chunk_prompt(carryover, window)
     try:
         response = await client.post(
             OLLAMA_CHUNK_URL,
@@ -117,35 +107,49 @@ async def agentic_chunk_batch(client: httpx.AsyncClient, text: str) -> list[str]
             },
         )
         response.raise_for_status()
-        chunks = parse_agentic_chunk_response(response.json().get("response", ""))
-        if chunks:
-            return normalize_agentic_chunks(chunks)
+        return parse_agentic_chunk_response(response.json().get("response", ""))
     except Exception:
-        pass
-
-    return fallback_split_text(text)
+        return None
 
 
-def build_agentic_chunk_prompt(text: str) -> str:
-    return f"""You are chunking confidential company knowledge-base text for retrieval.
+def build_agentic_chunk_prompt(carryover: list[str], window: list[str]) -> str:
+    carryover_text = format_numbered_chunks(carryover, "C")
+    window_text = format_numbered_chunks(window, "N")
+    return f"""You are refining confidential company knowledge-base chunks for retrieval.
 
-Group the document into coherent semantic chunks.
+You will receive:
+- CARRYOVER chunks: text from the previous window that was not finalized because it may need to merge with upcoming context.
+- NEW chunks: the next {AGENTIC_CHUNK_WINDOW_SIZE} recursive character chunks.
+
+Decide whether these chunks should stay separate, be combined, or be broken further.
 Rules:
 - Preserve the original wording exactly.
 - Do not summarize, rewrite, redact, invent, or omit content.
 - Keep related clauses, definitions, exceptions, and steps together.
 - Prefer chunks around {AGENTIC_CHUNK_TARGET_CHARS} characters.
 - Do not exceed {AGENTIC_CHUNK_MAX_CHARS} characters unless a single paragraph is longer.
+- If text at the end may need the next window to form a complete semantic chunk, put it in "carryover".
+- It is okay to carry over multiple chunks. For example, if 7 recursive chunks belong together, carry over the first 5 from one call and combine them after the next window arrives.
+- "final_chunks" must contain only text that is complete enough to embed now.
+- "carryover" must contain only trailing text that should wait for the next window.
 - Return only valid JSON in this exact shape:
-{{"chunks":["first exact chunk","second exact chunk"]}}
+{{"final_chunks":["complete chunk"],"carryover":["trailing chunk that may continue"]}}
 
-Document text:
-\"\"\"
-{text}
-\"\"\""""
+CARRYOVER chunks:
+{carryover_text or "(none)"}
+
+NEW chunks:
+{window_text}"""
 
 
-def parse_agentic_chunk_response(response_text: str) -> list[str]:
+def format_numbered_chunks(chunks: list[str], prefix: str) -> str:
+    return "\n\n".join(
+        f"[{prefix}{index + 1}]\n{chunk}"
+        for index, chunk in enumerate(chunks)
+    )
+
+
+def parse_agentic_chunk_response(response_text: str) -> dict | None:
     response_text = response_text.strip()
     if response_text.startswith("```"):
         response_text = response_text.strip("`")
@@ -155,16 +159,25 @@ def parse_agentic_chunk_response(response_text: str) -> list[str]:
     start = response_text.find("{")
     end = response_text.rfind("}")
     if start == -1 or end == -1 or end <= start:
-        return []
+        return None
 
     try:
         payload = json.loads(response_text[start:end + 1])
     except json.JSONDecodeError:
-        return []
+        return None
 
-    chunks = payload.get("chunks", [])
-    if not isinstance(chunks, list):
-        return []
+    final_chunks = payload.get("final_chunks", [])
+    carryover = payload.get("carryover", [])
+    if not isinstance(final_chunks, list) or not isinstance(carryover, list):
+        return None
+
+    return {
+        "final_chunks": clean_chunk_list(final_chunks),
+        "carryover": clean_chunk_list(carryover),
+    }
+
+
+def clean_chunk_list(chunks: list) -> list[str]:
     return [chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()]
 
 
