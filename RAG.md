@@ -88,7 +88,7 @@ knowledge_base/.vector_store/chunks.json
     "chunk": 0,
     "sha256": "document hash",
     "embedding_model": "nomic-embed-text",
-    "chunking_model": "gemma3:1b"
+    "chunking_model": "ministral-3:latest"
   }
 }
 ```
@@ -133,14 +133,14 @@ The parser converts each uploaded document into plain text. If no text can be ex
 
 Implemented in `split_text()`, `fallback_split_text()`, and `agentic_refine_chunk_window()` in `rag_ingestion.py`.
 
-The pipeline now starts with deterministic recursive character chunking, then asks local `gemma3:1b` to refine those chunks semantically.
+The pipeline now starts with deterministic recursive character chunking, then asks local `ministral-3:latest` to refine those chunks semantically.
 
 Step by step:
 
 1. The full parsed text is normalized.
 2. The normalized text is split with the recursive splitter using `RAG_CHUNK_SIZE=360` and `RAG_CHUNK_OVERLAP=0` by default.
-3. The first 5 recursive chunks are sent to `gemma3:1b`.
-4. Gemma decides whether those chunks should stay separate, be combined, or be broken further.
+3. The first 5 recursive chunks are sent to `ministral-3:latest`.
+4. the model decides whether those chunks should stay separate, be combined, or be broken further.
 5. Gemma can return completed chunks in `final_chunks` and trailing uncertain text in `carryover`.
 6. The next request sends that `carryover` plus the next 5 recursive chunks.
 7. This lets Gemma combine across window boundaries. For example, if 7 recursive chunks belong together, Gemma can carry over the first 5, then combine them after seeing the next 5.
@@ -277,14 +277,14 @@ Impact of changing:
 Default:
 
 ```text
-gemma3:1b
+ministral-3:latest
 ```
 
 Purpose:
 Controls which local LLM decides semantic chunk boundaries.
 
 Why this default:
-You already have `gemma3:1b` downloaded locally, and it is lightweight enough for VM usage. It is used only to decide chunk boundaries, not to answer with or store policy content externally.
+You already have `ministral-3:latest` downloaded locally, and it is lightweight enough for VM usage. It is used only to decide chunk boundaries, not to answer with or store policy content externally.
 
 Impact of changing:
 - A stronger local model may create cleaner semantic chunks.
@@ -303,7 +303,7 @@ Purpose:
 Maximum time allowed for each agentic chunking request.
 
 Why this default:
-`gemma3:1b` may be running on a CPU VM, and large paragraph batches can take time.
+`ministral-3:latest` may be running on a CPU VM, and large paragraph batches can take time.
 
 Impact of changing:
 - Higher values reduce timeout failures on slow hardware.
@@ -321,7 +321,7 @@ Purpose:
 Number of recursive chunks sent to Gemma in each refinement request.
 
 Why this default:
-Five 360-character chunks give Gemma enough local context to see short policy sections while keeping prompts small for `gemma3:1b`.
+Five 360-character chunks give the model enough local context to see short policy sections while keeping prompts small for `ministral-3:latest`.
 
 Impact of changing:
 - Higher values give Gemma more context per call, but increase latency and context pressure.
@@ -365,7 +365,7 @@ Purpose:
 Hard-ish maximum chunk size. If the LLM returns a chunk larger than this, the code deterministically splits it.
 
 Why this default:
-It gives `gemma3:1b` room to keep a full policy clause together while preventing very large chunks from becoming too broad for retrieval.
+It gives `ministral-3:latest` room to keep a full policy clause together while preventing very large chunks from becoming too broad for retrieval.
 
 Impact of changing:
 - Higher values preserve more context but reduce retrieval precision.
@@ -495,17 +495,17 @@ pip install -r requirements.txt
 Pull the chat/chunking model and the embedding model:
 
 ```bash
-ollama pull gemma3:1b
+ollama pull ministral-3:latest
 ollama pull nomic-embed-text
 ```
 
 Example run command:
 
 ```bash
-OLLAMA_URL=http://localhost:11434/api/generate \
-OLLAMA_MODEL='gemma3:1b' \
-LLM_TIMEOUT_SECONDS=300 \
-OLLAMA_EMBED_MODEL=nomic-embed-text \
-AGENTIC_CHUNK_MODEL=gemma3:1b \
+OLLAMA_URL=http://localhost:11434/api/generate 
+OLLAMA_MODEL='ministral-3:latest' 
+LLM_TIMEOUT_SECONDS=300 
+OLLAMA_EMBED_MODEL=nomic-embed-text 
+AGENTIC_CHUNK_MODEL=ministral-3:latest 
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
