@@ -20,6 +20,7 @@ AGENTIC_CHUNK_WINDOW_SIZE = int(os.getenv("AGENTIC_CHUNK_WINDOW_SIZE", "5"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "360"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "0"))
 VECTOR_STORE_NAME = ".vector_store"
+AGENTIC_CHUNK_INTERACTION_LOG = "agentic_chunk_interactions.jsonl"
 
 
 def supported_document_types() -> str:
@@ -57,7 +58,7 @@ def parse_docx(content: bytes) -> str:
     return "\n".join(paragraph.text for paragraph in document.paragraphs).strip()
 
 
-async def split_text(text: str) -> list[str]:
+async def split_text(text: str, knowledge_base_dir: Path, relative_path: str) -> list[str]:
     normalized = normalize_text(text)
     if not normalized:
         return []
@@ -66,24 +67,40 @@ async def split_text(text: str) -> list[str]:
     if not base_chunks:
         return []
 
+    interaction_log_path = agentic_chunk_log_path(knowledge_base_dir)
     refined_chunks = []
     carryover = []
     async with httpx.AsyncClient(timeout=AGENTIC_CHUNK_TIMEOUT_SECONDS) as client:
-        for start in range(0, len(base_chunks), AGENTIC_CHUNK_WINDOW_SIZE):
-            window = base_chunks[start:start + AGENTIC_CHUNK_WINDOW_SIZE]
-            result = await agentic_refine_chunk_window(client, carryover, window)
+        start = 0
+        first_window = True
+        while start < len(base_chunks):
+            window_size = AGENTIC_CHUNK_WINDOW_SIZE if first_window else max(1, AGENTIC_CHUNK_WINDOW_SIZE - 1)
+            window = base_chunks[start:start + window_size]
+            result = await agentic_refine_chunk_window(
+                client,
+                carryover,
+                window,
+                interaction_log_path,
+                relative_path,
+            )
             if result is None:
                 refined_chunks.extend(carryover + window)
                 carryover = []
+                first_window = False
+                start += window_size
                 continue
             refined_chunks.extend(result["final_chunks"])
             carryover = result["carryover"]
+            if len(carryover) > 1:
+                carryover = ["\n\n".join(carryover).strip()]
+            first_window = False
+            start += window_size
 
     refined_chunks.extend(carryover)
     return normalize_agentic_chunks([chunk for chunk in refined_chunks if chunk])
 
-
 def normalize_text(text: str) -> str:
+
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 
@@ -91,8 +108,13 @@ async def agentic_refine_chunk_window(
     client: httpx.AsyncClient,
     carryover: list[str],
     window: list[str],
+    interaction_log_path: Path,
+    relative_path: str,
 ) -> dict | None:
     prompt = build_agentic_chunk_prompt(carryover, window)
+    response_text = ""
+    error_message = None
+    result = None
     try:
         response = await client.post(
             OLLAMA_CHUNK_URL,
@@ -107,9 +129,28 @@ async def agentic_refine_chunk_window(
             },
         )
         response.raise_for_status()
-        return parse_agentic_chunk_response(response.json().get("response", ""))
-    except Exception:
+        response_text = response.json().get("response", "")
+        result = parse_agentic_chunk_response(response_text)
+        return result
+    except Exception as exc:
+        error_message = str(exc)
         return None
+    finally:
+        await append_agentic_chunk_interaction(
+            interaction_log_path,
+            {
+                "source": relative_path,
+                "carryover_chunks": carryover,
+                "window_chunks": window,
+                "prompt": prompt,
+                "reply": response_text,
+                "parsed_result": {
+                    "final_chunks": result["final_chunks"] if isinstance(result, dict) else None,
+                    "carryover": result["carryover"] if isinstance(result, dict) else None,
+                },
+                "error": error_message,
+            },
+        )
 
 
 def build_agentic_chunk_prompt(carryover: list[str], window: list[str]) -> str:
@@ -119,7 +160,9 @@ def build_agentic_chunk_prompt(carryover: list[str], window: list[str]) -> str:
 
 You will receive:
 - CARRYOVER chunks: text from the previous window that was not finalized because it may need to merge with upcoming context.
-- NEW chunks: the next {AGENTIC_CHUNK_WINDOW_SIZE} recursive character chunks.
+- NEW chunks: the next {len(window)} recursive character chunks.
+
+The first request will receive 5 NEW chunks. Later requests will receive exactly 1 CARRYOVER chunk plus 4 NEW chunks.
 
 Decide whether these chunks should stay separate, be combined, or be broken further.
 Rules:
@@ -129,7 +172,7 @@ Rules:
 - Prefer chunks around {AGENTIC_CHUNK_TARGET_CHARS} characters.
 - Do not exceed {AGENTIC_CHUNK_MAX_CHARS} characters unless a single paragraph is longer.
 - If text at the end may need the next window to form a complete semantic chunk, put it in "carryover".
-- It is okay to carry over multiple chunks. For example, if 7 recursive chunks belong together, carry over the first 5 from one call and combine them after the next window arrives.
+- Return at most one carryover chunk. If the trailing text needs to wait for the next call, put the full trailing text into "carryover".
 - "final_chunks" must contain only text that is complete enough to embed now.
 - "carryover" must contain only trailing text that should wait for the next window.
 - Return only valid JSON in this exact shape:
@@ -147,6 +190,18 @@ def format_numbered_chunks(chunks: list[str], prefix: str) -> str:
         f"[{prefix}{index + 1}]\n{chunk}"
         for index, chunk in enumerate(chunks)
     )
+
+
+def agentic_chunk_log_path(knowledge_base_dir: Path) -> Path:
+    path = knowledge_base_dir / VECTOR_STORE_NAME / AGENTIC_CHUNK_INTERACTION_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+async def append_agentic_chunk_interaction(log_path: Path, record: dict) -> None:
+    record["timestamp"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def parse_agentic_chunk_response(response_text: str) -> dict | None:
@@ -276,7 +331,7 @@ async def ingest_document(
     content: bytes,
 ) -> dict:
     text = parse_document(document_path.name, content)
-    chunks = await split_text(text)
+    chunks = await split_text(text, knowledge_base_dir, relative_path)
     if not chunks:
         raise ValueError("Document does not contain extractable text.")
 
