@@ -152,6 +152,13 @@ def get_user_by_google_id(google_id: str):
         ).fetchone()
         return dict(row) if row else None
 
+def get_user_by_username(username: str):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (username.strip(),),
+        ).fetchone()
+        return dict(row) if row else None
 
 def link_google_id(user_id: int, google_id: str):
     """Link a Google account to an existing email/password user."""

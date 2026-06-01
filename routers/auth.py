@@ -14,6 +14,7 @@ from DATABASE import (
     create_user,
     get_user_by_email,
     get_user_by_google_id,
+    get_user_by_username,
     link_google_id,
 )
 
@@ -40,8 +41,8 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email:    EmailStr
-    password: str   = Field(..., min_length=1)
+    login:    str = Field(..., min_length=1)  # accepts email or username
+    password: str = Field(..., min_length=1)
 
 
 class TokenResponse(BaseModel):
@@ -58,6 +59,12 @@ def register(request: RegisterRequest):
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with that email already exists",
         )
+    
+    if get_user_by_username(request.username):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That username is already taken",
+        )
 
     user_id = create_user(
         email=request.email,
@@ -69,16 +76,22 @@ def register(request: RegisterRequest):
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: LoginRequest):
-    user = get_user_by_email(request.email)
-    if not user or not user.get("hashed_password"):
+    # Try email first, then username
+    user = get_user_by_email(request.login) or get_user_by_username(request.login)
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail="No account found with that email or username",
+        )
+    if not user.get("hashed_password"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account uses Google login — please sign in with Google",
         )
     if not verify_password(request.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            detail="Incorrect password",
         )
     return TokenResponse(access_token=create_access_token(user["id"]))
 
