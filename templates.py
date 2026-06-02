@@ -849,6 +849,11 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
             sendButton.disabled = true;
             setStatus("Sending...");
+            const statusTimers = [
+                window.setTimeout(() => setStatus("Retrieving knowledge base context..."), 3000),
+                window.setTimeout(() => setStatus("Generating answer with the local model..."), 15000),
+                window.setTimeout(() => setStatus("Still working. Local models can take a few minutes on a VM."), 60000)
+            ];
 
             try {{
                 const response = await fetch(`/api/threads/${{state.activeThreadId}}/prompt`, {{
@@ -865,6 +870,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             }} catch (error) {{
                 setStatus(error.message, true);
             }} finally {{
+                statusTimers.forEach((timer) => window.clearTimeout(timer));
                 sendButton.disabled = false;
             }}
         }}

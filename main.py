@@ -1,4 +1,7 @@
+import asyncio
+import logging
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -20,9 +23,12 @@ from DATABASE import (
     title_from_prompt,
 )
 from knowledge_base_api import init_knowledge_base, router as knowledge_base_router
-from rag_config import MAX_CONTEXT_TOKENS
+from rag_config import MAX_CONTEXT_TOKENS, RAG_RETRIEVAL_TIMEOUT_SECONDS
 from rag_retrieval import retrieve_context
 from templates import render_page
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.include_router(knowledge_base_router)
@@ -88,9 +94,22 @@ def build_context_prompt(global_context: str, messages, retrieval_context: str, 
 
 
 async def ask_llm(messages, prompt: str) -> str:
+    started_at = time.monotonic()
     try:
-        retrieval_context = await retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS)
-    except Exception:
+        retrieval_context = await asyncio.wait_for(
+            retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS),
+            timeout=RAG_RETRIEVAL_TIMEOUT_SECONDS,
+        )
+        logger.info(
+            "Retrieved knowledge context in %.2fs (%s chars).",
+            time.monotonic() - started_at,
+            len(retrieval_context),
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Knowledge retrieval timed out after %.2fs.", RAG_RETRIEVAL_TIMEOUT_SECONDS)
+        retrieval_context = ""
+    except Exception as exc:
+        logger.warning("Knowledge retrieval failed: %s", exc)
         retrieval_context = ""
 
     payload = {
@@ -109,9 +128,11 @@ async def ask_llm(messages, prompt: str) -> str:
             response = await client.post(OLLAMA_URL, json=payload, timeout=LLM_TIMEOUT_SECONDS)
             response.raise_for_status()
     except httpx.HTTPError as exc:
+        logger.warning("LLM request failed after %.2fs: %s", time.monotonic() - started_at, exc)
         return f"Failed to contact LLM backend: {exc}"
 
     data = response.json()
+    logger.info("Prompt completed in %.2fs.", time.monotonic() - started_at)
     return data.get("response", "").strip() or "The model returned an empty response."
 
 

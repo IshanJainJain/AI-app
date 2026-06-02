@@ -1,5 +1,7 @@
 from pathlib import Path
+import logging
 
+from rag_config import RAG_TOP_K
 from rag_store import (
     bm25_search,
     build_context,
@@ -9,16 +11,20 @@ from rag_store import (
     select_context,
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def hybrid_retrieval(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
     try:
-        faiss_results = await faiss_search(query, 20, knowledge_base_dir)
-    except Exception:
+        faiss_results = await faiss_search(query, k, knowledge_base_dir)
+    except Exception as exc:
+        logger.warning("FAISS retrieval failed: %s", exc)
         faiss_results = []
 
     try:
-        bm25_results = bm25_search(query, 20, knowledge_base_dir)
-    except Exception:
+        bm25_results = bm25_search(query, k, knowledge_base_dir)
+    except Exception as exc:
+        logger.warning("BM25 retrieval failed: %s", exc)
         bm25_results = []
 
     candidates = []
@@ -34,7 +40,7 @@ async def hybrid_retrieval(query: str, k: int, knowledge_base_dir: Path) -> list
 
 
 async def retrieve_context(query: str, knowledge_base_dir: Path, max_tokens: int = 6000) -> str:
-    candidates = await hybrid_retrieval(query, 20, knowledge_base_dir)
+    candidates = await hybrid_retrieval(query, RAG_TOP_K, knowledge_base_dir)
     if not candidates:
         return ""
 
