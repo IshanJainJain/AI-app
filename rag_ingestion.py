@@ -42,6 +42,32 @@ from rag_store import (
     tokenize_for_bm25,
 )
 
+
+async def ingest_document(
+    knowledge_base_dir,
+    document_path,
+    relative_path: str,
+    content: bytes,
+) -> dict:
+    text = parse_document(document_path.name, content)
+    if not text.strip():
+        raise ValueError("Document did not contain any extractable text.")
+
+    chunks = await split_text(text, knowledge_base_dir, relative_path)
+    if not chunks:
+        raise ValueError("Document did not produce any chunks.")
+
+    vectors = await embed_chunks(chunks)
+    store_vectors(knowledge_base_dir, relative_path, chunks, vectors, content)
+
+    return {
+        "source": relative_path,
+        "chunks": len(chunks),
+        "characters": len(text),
+        "embedding_model": OLLAMA_EMBED_MODEL,
+        "chunking_model": AGENTIC_CHUNK_MODEL,
+    }
+
 __all__ = [
     "AGENTIC_CHUNK_INTERACTION_LOG",
     "AGENTIC_CHUNK_MAX_CHARS",
@@ -73,6 +99,7 @@ __all__ = [
     "fallback_split_text",
     "get_reranker",
     "hybrid_retrieval",
+    "ingest_document",
     "load_bm25_index",
     "parse_docx",
     "parse_document",
