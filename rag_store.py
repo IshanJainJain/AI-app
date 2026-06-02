@@ -7,6 +7,17 @@ from pathlib import Path
 from rag_config import BM25_INDEX_NAME, OLLAMA_EMBED_MODEL, VECTOR_STORE_NAME
 
 
+def chunks_path_for(knowledge_base_dir: Path) -> Path:
+    return knowledge_base_dir / VECTOR_STORE_NAME / "chunks.json"
+
+
+def load_chunks(knowledge_base_dir: Path) -> list[dict]:
+    chunks_path = chunks_path_for(knowledge_base_dir)
+    if not chunks_path.exists():
+        return []
+    return json.loads(chunks_path.read_text(encoding="utf-8"))
+
+
 def store_vectors(
     knowledge_base_dir: Path,
     relative_path: str,
@@ -23,9 +34,14 @@ def store_vectors(
     vector_store_dir = knowledge_base_dir / VECTOR_STORE_NAME
     vector_store_dir.mkdir(exist_ok=True)
     index_path = vector_store_dir / "faiss.index"
-    chunks_path = vector_store_dir / "chunks.json"
+    chunks_path = chunks_path_for(knowledge_base_dir)
+
+    if not chunks or not vectors:
+        return
 
     matrix = np.array(vectors, dtype="float32")
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        raise RuntimeError("Embedding model returned no usable vectors.")
     faiss.normalize_L2(matrix)
 
     if index_path.exists():
@@ -35,9 +51,7 @@ def store_vectors(
     else:
         index = faiss.IndexFlatIP(matrix.shape[1])
 
-    existing_chunks = []
-    if chunks_path.exists():
-        existing_chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    existing_chunks = load_chunks(knowledge_base_dir)
 
     document_hash = hashlib.sha256(content).hexdigest()
     start_index = len(existing_chunks)
@@ -94,12 +108,20 @@ def load_bm25_index(knowledge_base_dir: Path) -> dict:
 
 
 def bm25_search(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
-    bm25_index = load_bm25_index(knowledge_base_dir)
+    try:
+        bm25_index = load_bm25_index(knowledge_base_dir)
+    except FileNotFoundError:
+        return []
+
+    chunks = bm25_index.get("chunks", [])
+    if not chunks:
+        return []
+
     scores = bm25_index["bm25"].get_scores(tokenize_for_bm25(query))
     ranked_indices = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
     results = []
     for index in ranked_indices[:k]:
-        chunk = bm25_index["chunks"][index]
+        chunk = chunks[index]
         results.append({
             "score": float(scores[index]),
             "text": chunk["text"],
@@ -108,17 +130,19 @@ def bm25_search(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
     return results
 
 
-def chunks_for_document(knowledge_base_dir: Path, relative_path: str) -> list[dict]:
-    chunks_path = knowledge_base_dir / VECTOR_STORE_NAME / "chunks.json"
-    if not chunks_path.exists():
-        return []
-
-    chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
-    return [
+def chunks_for_document(knowledge_base_dir: Path, relative_path: str) -> dict:
+    chunks = [
         chunk
-        for chunk in chunks
+        for chunk in load_chunks(knowledge_base_dir)
         if chunk.get("metadata", {}).get("source") == relative_path
     ]
+    return {
+        "source": relative_path,
+        "chunks": sorted(
+            chunks,
+            key=lambda chunk: chunk.get("metadata", {}).get("chunk", 0),
+        ),
+    }
 
 
 async def faiss_search(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
@@ -132,11 +156,11 @@ async def faiss_search(query: str, k: int, knowledge_base_dir: Path) -> list[dic
 
     vector_store_dir = knowledge_base_dir / VECTOR_STORE_NAME
     index_path = vector_store_dir / "faiss.index"
-    chunks_path = vector_store_dir / "chunks.json"
+    chunks_path = chunks_path_for(knowledge_base_dir)
     if not index_path.exists() or not chunks_path.exists():
-        raise FileNotFoundError("FAISS index has not been built yet.")
+        return []
 
-    chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    chunks = load_chunks(knowledge_base_dir)
     if not chunks:
         return []
 
@@ -148,6 +172,8 @@ async def faiss_search(query: str, k: int, knowledge_base_dir: Path) -> list[dic
     results = []
     for score, index_id in zip(scores[0], indices[0]):
         if index_id < 0:
+            continue
+        if int(index_id) >= len(chunks):
             continue
         chunk = chunks[int(index_id)]
         results.append({
@@ -168,9 +194,14 @@ def chunk_identity(result: dict) -> tuple:
 
 
 def get_reranker():
+    failure = getattr(get_reranker, "_failed", None)
+    if failure is not None:
+        raise RuntimeError(f"Reranker is unavailable: {failure}")
+
     try:
         from FlagEmbedding import FlagReranker
     except ImportError as exc:
+        get_reranker._failed = str(exc)
         raise RuntimeError("Install FlagEmbedding to use bge-reranker-base reranking.") from exc
 
     reranker = getattr(get_reranker, "_cached", None)
@@ -179,7 +210,12 @@ def get_reranker():
 
     from rag_config import RERANKER_DEVICE, RERANKER_MODEL
 
-    reranker = FlagReranker(RERANKER_MODEL, use_fp16=False, device=RERANKER_DEVICE)
+    try:
+        reranker = FlagReranker(RERANKER_MODEL, use_fp16=False, device=RERANKER_DEVICE)
+    except Exception as exc:
+        get_reranker._failed = str(exc)
+        raise
+
     get_reranker._cached = reranker
     return reranker
 
@@ -188,9 +224,22 @@ def rerank_chunks(query: str, chunks: list[dict], top_n: int) -> list[dict]:
     if not chunks:
         return []
 
-    reranker = get_reranker()
+    try:
+        reranker = get_reranker()
+    except Exception:
+        return chunks[:top_n]
+
     pairs = [[query, chunk.get("text", "")] for chunk in chunks]
-    scores = reranker.compute_score(pairs)
+    try:
+        scores = reranker.compute_score(pairs)
+    except Exception:
+        return chunks[:top_n]
+
+    if not isinstance(scores, list):
+        try:
+            scores = scores.tolist()
+        except AttributeError:
+            scores = [scores]
 
     ranked = sorted(
         (
@@ -204,16 +253,21 @@ def rerank_chunks(query: str, chunks: list[dict], top_n: int) -> list[dict]:
 
 
 def count_tokens(text: str) -> int:
+    fallback_count = max(1, len(text) // 4)
     try:
         import tiktoken
-    except ImportError as exc:
-        raise RuntimeError("Install tiktoken to use token-budget context selection.") from exc
+    except ImportError:
+        return fallback_count
 
     try:
-        encoder = tiktoken.encoding_for_model("gpt-4o-mini")
-    except Exception:
         encoder = tiktoken.get_encoding("cl100k_base")
-    return len(encoder.encode(text))
+    except Exception:
+        return fallback_count
+
+    try:
+        return len(encoder.encode(text))
+    except Exception:
+        return fallback_count
 
 
 def select_context(chunks: list[dict], max_tokens: int) -> list[dict]:
@@ -248,9 +302,16 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-async def retrieve_context(query: str, knowledge_base_dir: Path) -> str:
-    faiss_results = await faiss_search(query, 20, knowledge_base_dir)
-    bm25_results = bm25_search(query, 20, knowledge_base_dir)
+async def retrieve_context(query: str, knowledge_base_dir: Path, max_tokens: int = 6000) -> str:
+    try:
+        faiss_results = await faiss_search(query, 20, knowledge_base_dir)
+    except Exception:
+        faiss_results = []
+
+    try:
+        bm25_results = bm25_search(query, 20, knowledge_base_dir)
+    except Exception:
+        bm25_results = []
 
     candidates = []
     seen = set()
@@ -261,6 +322,9 @@ async def retrieve_context(query: str, knowledge_base_dir: Path) -> str:
         seen.add(identity)
         candidates.append(result)
 
+    if not candidates:
+        return ""
+
     reranked = rerank_chunks(query, candidates, top_n=len(candidates))
-    selected = select_context(reranked, 6000)
+    selected = select_context(reranked, max_tokens)
     return build_context(selected)

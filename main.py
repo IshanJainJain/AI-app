@@ -88,7 +88,11 @@ def build_context_prompt(global_context: str, messages, retrieval_context: str, 
 
 
 async def ask_llm(messages, prompt: str) -> str:
-    retrieval_context = await retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS)
+    try:
+        retrieval_context = await retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS)
+    except Exception:
+        retrieval_context = ""
+
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": build_context_prompt(
