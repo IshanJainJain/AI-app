@@ -1,5 +1,6 @@
 import re
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -11,6 +12,7 @@ from rag_ingestion import (
     ingest_document,
     supported_document_types,
 )
+from rag_reindex import rebuild_knowledge_base_indexes
 
 router = APIRouter(prefix="/api/knowledge-base", tags=["knowledge-base"])
 
@@ -158,3 +160,26 @@ async def api_upload_knowledge_file(parent: str = Form(""), file: UploadFile = F
     payload = knowledge_payload(parent)
     payload["ingestion"] = ingestion
     return payload
+
+
+@router.delete("/files")
+async def api_delete_knowledge_file(path: str):
+    target = knowledge_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    target.unlink()
+    await rebuild_knowledge_base_indexes(KNOWLEDGE_BASE_DIR)
+    return knowledge_payload(str(target.parent.relative_to(KNOWLEDGE_BASE_DIR)) if target.parent != KNOWLEDGE_BASE_DIR else "")
+
+
+@router.delete("/folders")
+async def api_delete_knowledge_folder(path: str):
+    target = knowledge_path(path)
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    shutil.rmtree(target)
+    await rebuild_knowledge_base_indexes(KNOWLEDGE_BASE_DIR)
+    parent = target.parent
+    return knowledge_payload(str(parent.relative_to(KNOWLEDGE_BASE_DIR)) if parent != KNOWLEDGE_BASE_DIR else "")

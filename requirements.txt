@@ -5,4 +5,7 @@ numpy
 pypdf
 python-multipart
 python-docx
+rank-bm25
+FlagEmbedding
+tiktoken
 uvicorn

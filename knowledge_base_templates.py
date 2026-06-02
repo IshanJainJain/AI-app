@@ -140,6 +140,22 @@ KNOWLEDGE_BASE_CSS = """
             flex: 0 0 auto;
         }
 
+        .kb-delete {
+            width: 34px;
+            min-height: 34px;
+            padding: 0;
+            border-radius: 8px;
+            background: #f3f4f6;
+            color: var(--danger);
+            font-size: 18px;
+            line-height: 1;
+            flex: 0 0 auto;
+        }
+
+        .kb-delete:hover {
+            background: #fee4e2;
+        }
+
         .kb-empty {
             width: min(520px, 100%);
             border: 1px dashed var(--line);
@@ -285,23 +301,26 @@ KNOWLEDGE_BASE_SCRIPT = """
             ` : "";
 
             const folders = data.folders.map((folder) => `
-                <button class="kb-entry" type="button" data-kb-path="${escapeHtml(folder.path)}" data-kb-kind="folder">
-                    <span class="kb-entry-main">
+                <div class="kb-entry">
+                    <button class="kb-entry-main" type="button" data-kb-path="${escapeHtml(folder.path)}" data-kb-kind="folder">
                         <span class="kb-entry-icon" aria-hidden="true">D</span>
                         <span class="kb-entry-name">${escapeHtml(folder.name)}</span>
-                    </span>
-                    <span class="kb-entry-meta">Folder</span>
-                </button>
+                    </button>
+                    <button class="kb-delete" type="button" data-kb-delete="${escapeHtml(folder.path)}" data-kb-delete-kind="folder" title="Delete folder">×</button>
+                </div>
             `).join("");
 
             const files = data.files.map((file) => `
-                <button class="kb-entry" type="button" data-kb-path="${escapeHtml(file.path)}" data-kb-kind="file">
-                    <span class="kb-entry-main">
+                <div class="kb-entry">
+                    <button class="kb-entry-main" type="button" data-kb-path="${escapeHtml(file.path)}" data-kb-kind="file">
                         <span class="kb-entry-icon" aria-hidden="true">T</span>
                         <span class="kb-entry-name">${escapeHtml(file.name)}</span>
-                    </span>
-                    <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
-                </button>
+                    </button>
+                    <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+                        <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
+                        <button class="kb-delete" type="button" data-kb-delete="${escapeHtml(file.path)}" data-kb-delete-kind="file" title="Delete file">×</button>
+                    </div>
+                </div>
             `).join("");
 
             if (!parentEntry && !folders && !files) {
@@ -320,6 +339,12 @@ KNOWLEDGE_BASE_SCRIPT = """
             });
             kbBrowser.querySelectorAll("[data-kb-kind='file']").forEach((button) => {
                 button.addEventListener("click", () => loadDocumentChunks(button.dataset.kbPath || ""));
+            });
+            kbBrowser.querySelectorAll("[data-kb-delete]").forEach((button) => {
+                button.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    deleteKnowledgeItem(button.dataset.kbDelete || "", button.dataset.kbDeleteKind || "file");
+                });
             });
         }
 
@@ -365,6 +390,31 @@ KNOWLEDGE_BASE_SCRIPT = """
                 }
                 renderDocumentChunks(await response.json());
                 setKnowledgeStatus("");
+            } catch (error) {
+                setKnowledgeStatus(error.message, true);
+            }
+        }
+
+        async function deleteKnowledgeItem(path, kind) {
+            if (!confirm(`Delete this ${kind}?`)) {
+                return;
+            }
+
+            setKnowledgeStatus("Deleting...");
+            try {
+                const response = await fetch(`/api/knowledge-base/${kind === "folder" ? "folders" : "files"}?path=${encodeURIComponent(path)}`, {
+                    method: "DELETE"
+                });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({ detail: "Could not delete item." }));
+                    throw new Error(data.detail || "Could not delete item.");
+                }
+                state.knowledgeBase = {
+                    ...(await response.json()),
+                    loaded: true
+                };
+                renderKnowledgeBase();
+                setKnowledgeStatus("Deleted.");
             } catch (error) {
                 setKnowledgeStatus(error.message, true);
             }

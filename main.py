@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -19,6 +20,8 @@ from DATABASE import (
     title_from_prompt,
 )
 from knowledge_base_api import init_knowledge_base, router as knowledge_base_router
+from rag_config import MAX_CONTEXT_TOKENS
+from rag_retrieval import retrieve_context
 from templates import render_page
 
 app = FastAPI()
@@ -27,6 +30,7 @@ app.include_router(knowledge_base_router)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "devstral")
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
+KNOWLEDGE_BASE_DIR = Path(__file__).with_name("knowledge_base")
 
 
 class PromptRequest(BaseModel):
@@ -51,41 +55,48 @@ def startup():
     init_knowledge_base()
 
 
-def build_context_prompt(global_context: str, messages, prompt: str) -> str:
-    sections = []
-    if global_context.strip():
-        sections.append(
-            "Global context shared across all conversations:\n"
-            f"{global_context.strip()}"
-        )
-
-    history = []
+def build_context_prompt(global_context: str, messages, retrieval_context: str, prompt: str) -> str:
+    history_lines = []
     for message in messages:
         speaker = "User" if message["role"] == "user" else "Assistant"
-        history.append(f"{speaker}: {message['content']}")
+        history_lines.append(f"{speaker}: {message['content']}")
 
-    history_text = "\n\n".join(history)
-    if history_text:
-        sections.append(
-            "Current conversation history:\n"
-            f"{history_text}"
-        )
+    history_text = "\n".join(history_lines).strip() or "No prior messages in this thread."
+    global_text = global_context.strip() or "No shared global context has been set."
+    retrieval_text = retrieval_context.strip() or "No relevant knowledge base chunks were retrieved."
 
-    if not sections:
-        return prompt
-
-    context_text = "\n\n".join(sections)
     return (
-        "Use the context below when answering. The global context applies to every conversation.\n\n"
-        f"{context_text}\n\n"
-        f"User: {prompt}\n\nAssistant:"
+        "You are a careful assistant inside a persistent chat application.\n"
+        "Use the sources below in this order of priority:\n"
+        "1. The user's latest question.\n"
+        "2. Relevant knowledge base chunks.\n"
+        "3. The current thread history.\n"
+        "4. Shared global context.\n"
+        "Do not invent facts. If the knowledge base conflicts with chat history, explain the conflict briefly and answer conservatively.\n"
+        "When using the knowledge base, prefer exact wording from the retrieved chunks for policy, process, or company-specific facts.\n"
+        "Keep the answer concise, direct, and useful.\n\n"
+        "GLOBAL CONTEXT\n"
+        f"{global_text}\n\n"
+        "THREAD HISTORY\n"
+        f"{history_text}\n\n"
+        "RETRIEVED KNOWLEDGE BASE CONTEXT\n"
+        f"{retrieval_text}\n\n"
+        "USER QUESTION\n"
+        f"{prompt}\n\n"
+        "ANSWER\n"
     )
 
 
 async def ask_llm(messages, prompt: str) -> str:
+    retrieval_context = await retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS)
     payload = {
         "model": OLLAMA_MODEL,
-        "prompt": build_context_prompt(get_global_context(), messages, prompt),
+        "prompt": build_context_prompt(
+            get_global_context(),
+            messages,
+            retrieval_context,
+            prompt,
+        ),
         "stream": False,
     }
 
