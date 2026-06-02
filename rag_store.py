@@ -108,6 +108,19 @@ def bm25_search(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
     return results
 
 
+def chunks_for_document(knowledge_base_dir: Path, relative_path: str) -> list[dict]:
+    chunks_path = knowledge_base_dir / VECTOR_STORE_NAME / "chunks.json"
+    if not chunks_path.exists():
+        return []
+
+    chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    return [
+        chunk
+        for chunk in chunks
+        if chunk.get("metadata", {}).get("source") == relative_path
+    ]
+
+
 async def faiss_search(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
     try:
         import faiss
