@@ -45,6 +45,10 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             box-sizing: border-box;
         }}
 
+        [hidden] {{
+            display: none !important;
+        }}
+
         body {{
             margin: 0;
             height: 100vh;
@@ -336,7 +340,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             border: 1px solid var(--line);
             border-radius: 8px;
             background: var(--panel);
-            overflow: hidden;
+            overflow: visible;
         }}
 
         .message.user {{
@@ -351,11 +355,72 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         .message-header {{
             display: flex;
             justify-content: space-between;
+            align-items: center;
             gap: 12px;
             padding: 10px 12px;
             background: rgba(15, 118, 110, 0.08);
             color: var(--muted);
             font-size: 13px;
+        }}
+
+        .message-header-main {{
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            min-width: 0;
+            flex: 1 1 auto;
+        }}
+
+        .response-actions {{
+            position: relative;
+            flex: 0 0 auto;
+        }}
+
+        .response-menu-button {{
+            display: grid;
+            place-items: center;
+            width: 30px;
+            min-height: 30px;
+            padding: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--muted);
+            font-size: 20px;
+            line-height: 1;
+        }}
+
+        .response-menu-button:hover {{
+            background: rgba(15, 118, 110, 0.12);
+            color: var(--text);
+        }}
+
+        .response-menu {{
+            position: absolute;
+            top: 34px;
+            right: 0;
+            z-index: 10;
+            width: 150px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            box-shadow: 0 12px 30px rgba(17, 28, 24, 0.16);
+            padding: 6px;
+        }}
+
+        .response-menu button {{
+            width: 100%;
+            min-height: 34px;
+            padding: 0 10px;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text);
+            text-align: left;
+            font-size: 14px;
+            font-weight: 700;
+        }}
+
+        .response-menu button:hover {{
+            background: var(--panel-alt);
         }}
 
         pre {{
@@ -436,6 +501,90 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
         .status.error {{
             color: var(--danger);
+        }}
+
+        .context-modal {{
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            display: grid;
+            place-items: center;
+            background: rgba(17, 28, 24, 0.45);
+            padding: 24px;
+        }}
+
+        .context-modal-panel {{
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            width: min(1180px, 96vw);
+            height: min(820px, 92vh);
+            max-height: min(820px, 92vh);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            box-shadow: 0 24px 70px rgba(17, 28, 24, 0.28);
+            overflow: hidden;
+        }}
+
+        .context-modal-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            border-bottom: 1px solid var(--line);
+            padding: 14px 16px;
+        }}
+
+        .context-modal-header h2 {{
+            margin: 0;
+            font-size: 18px;
+        }}
+
+        .context-modal-close {{
+            width: 36px;
+            min-height: 36px;
+            padding: 0;
+            background: #edf3ef;
+            color: var(--text);
+        }}
+
+        .context-modal-close:hover {{
+            background: #dfe9e4;
+        }}
+
+        .context-columns {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            min-height: 0;
+        }}
+
+        .context-column {{
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            min-width: 0;
+            min-height: 0;
+            border-right: 1px solid var(--line);
+        }}
+
+        .context-column:last-child {{
+            border-right: 0;
+        }}
+
+        .context-column h3 {{
+            margin: 0;
+            border-bottom: 1px solid var(--line);
+            background: #f6f8f5;
+            padding: 12px 14px;
+            font-size: 15px;
+        }}
+
+        .context-text {{
+            min-height: 0;
+            overflow: auto;
+            padding: 14px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
         }}
 
         {KNOWLEDGE_BASE_CSS}
@@ -548,8 +697,31 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 padding: 10px;
             }}
 
+            .message-header-main {{
+                flex-direction: column;
+                gap: 2px;
+            }}
+
             .composer {{
                 padding: 10px;
+            }}
+
+            .context-modal {{
+                padding: 10px;
+            }}
+
+            .context-columns {{
+                grid-template-columns: 1fr;
+            }}
+
+            .context-column {{
+                min-height: 260px;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }}
+
+            .context-column:last-child {{
+                border-bottom: 0;
             }}
 
             textarea {{
@@ -629,6 +801,25 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         </div>
     </main>
 
+    <div class="context-modal" id="context-modal" role="dialog" aria-modal="true" aria-labelledby="context-modal-title" hidden>
+        <section class="context-modal-panel">
+            <header class="context-modal-header">
+                <h2 id="context-modal-title">Response context</h2>
+                <button class="context-modal-close" id="context-modal-close" type="button" title="Close">x</button>
+            </header>
+            <div class="context-columns">
+                <article class="context-column">
+                    <h3>Thread context</h3>
+                    <pre class="context-text" id="thread-context-view"></pre>
+                </article>
+                <article class="context-column">
+                    <h3>RAG chunks</h3>
+                    <pre class="context-text" id="rag-context-view"></pre>
+                </article>
+            </div>
+        </section>
+    </div>
+
     <script>
         const state = {initial_state};
         const storageKey = "local-ai-active-thread-id";
@@ -647,6 +838,10 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         const globalContextStatus = document.querySelector("#global-context-status");
         const menuButtons = document.querySelectorAll(".menu-button");
         const menuPanels = document.querySelectorAll(".menu-panel");
+        const contextModal = document.querySelector("#context-modal");
+        const contextModalClose = document.querySelector("#context-modal-close");
+        const threadContextView = document.querySelector("#thread-context-view");
+        const ragContextView = document.querySelector("#rag-context-view");
         {KNOWLEDGE_BASE_BINDINGS}
 
         function showMenu(menu) {{
@@ -675,6 +870,52 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
         function activeThread() {{
             return state.threads.find((thread) => thread.id === state.activeThreadId) || state.threads[0];
+        }}
+
+        function normalizeContextText(value) {{
+            return String(value || "")
+                .replace(/\\r\\n/g, "\\n")
+                .replace(/\\\\r\\\\n/g, "\\n")
+                .replace(/\\\\n/g, "\\n")
+                .replace(/\\/n/g, "\\n")
+                .trim();
+        }}
+
+        function closeResponseMenus() {{
+            messagesPanel.querySelectorAll(".response-menu").forEach((menu) => {{
+                menu.hidden = true;
+            }});
+        }}
+
+        function fallbackThreadContextFor(messageId) {{
+            const lines = [];
+            for (const message of state.messages) {{
+                if (message.id === messageId) {{
+                    break;
+                }}
+                const speaker = message.role === "user" ? "User" : "Assistant";
+                lines.push(`${{speaker}}: ${{message.content || ""}}`);
+            }}
+            return lines.join("\\n\\n");
+        }}
+
+        function openContextModal(messageId) {{
+            const message = state.messages.find((item) => item.id === messageId);
+            if (!message) {{
+                return;
+            }}
+
+            const threadContext = normalizeContextText(message.thread_context || fallbackThreadContextFor(messageId));
+            const ragContext = normalizeContextText(message.rag_context);
+            threadContextView.textContent = threadContext || "No thread context was saved for this response.";
+            ragContextView.textContent = ragContext || "No RAG chunks were retrieved for this response.";
+            contextModal.hidden = false;
+        }}
+
+        function closeContextModal() {{
+            contextModal.hidden = true;
+            threadContextView.textContent = "";
+            ragContextView.textContent = "";
         }}
 
         {KNOWLEDGE_BASE_SCRIPT}
@@ -724,8 +965,18 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             messagesPanel.innerHTML = state.messages.map((message) => `
                 <article class="message ${{escapeHtml(message.role)}}">
                     <div class="message-header">
-                        <strong>${{message.role === "user" ? "You" : "Assistant"}}</strong>
-                        <span>${{escapeHtml(message.created_at)}}</span>
+                        <div class="message-header-main">
+                            <strong>${{message.role === "user" ? "You" : "Assistant"}}</strong>
+                            <span>${{escapeHtml(message.created_at)}}</span>
+                        </div>
+                        ${{message.role === "assistant" ? `
+                            <div class="response-actions">
+                                <button class="response-menu-button" type="button" data-response-menu="${{message.id}}" aria-label="Response options">...</button>
+                                <div class="response-menu" data-response-menu-panel="${{message.id}}" hidden>
+                                    <button type="button" data-see-context="${{message.id}}">See context</button>
+                                </div>
+                            </div>
+                        ` : ""}}
                     </div>
                     <pre>${{escapeHtml(message.content)}}</pre>
                 </article>
@@ -879,6 +1130,41 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         saveGlobalContextButton.addEventListener("click", saveGlobalContext);
         renameForm.addEventListener("submit", renameThread);
         sendButton.addEventListener("click", sendPrompt);
+        contextModalClose.addEventListener("click", closeContextModal);
+        contextModal.addEventListener("click", (event) => {{
+            if (event.target === contextModal) {{
+                closeContextModal();
+            }}
+        }});
+        document.addEventListener("keydown", (event) => {{
+            if (event.key === "Escape") {{
+                closeResponseMenus();
+                if (!contextModal.hidden) {{
+                    closeContextModal();
+                }}
+            }}
+        }});
+        messagesPanel.addEventListener("click", (event) => {{
+            const menuButton = event.target.closest("[data-response-menu]");
+            if (menuButton) {{
+                const menu = messagesPanel.querySelector(`[data-response-menu-panel="${{menuButton.dataset.responseMenu}}"]`);
+                const shouldOpen = menu ? menu.hidden : false;
+                closeResponseMenus();
+                if (menu) {{
+                    menu.hidden = !shouldOpen;
+                }}
+                return;
+            }}
+
+            const contextButton = event.target.closest("[data-see-context]");
+            if (contextButton) {{
+                closeResponseMenus();
+                openContextModal(Number(contextButton.dataset.seeContext));
+                return;
+            }}
+
+            closeResponseMenus();
+        }});
         {KNOWLEDGE_BASE_EVENTS}
         menuButtons.forEach((button) => {{
             button.addEventListener("click", () => showMenu(button.dataset.menu));

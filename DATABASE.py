@@ -33,11 +33,25 @@ def init_db():
                 thread_id INTEGER NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
+                thread_context TEXT DEFAULT '',
+                rag_context TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
             )
         """)
+        ensure_message_context_columns(conn)
         migrate_old_logs(conn)
+
+
+def ensure_message_context_columns(conn):
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+    }
+    if "thread_context" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN thread_context TEXT DEFAULT ''")
+    if "rag_context" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN rag_context TEXT DEFAULT ''")
 
 
 def get_global_context() -> str:
@@ -146,25 +160,33 @@ def get_or_create_first_thread() -> int:
         return create_thread(conn=conn)
 
 
-def add_message(thread_id: int, role: str, content: str, conn=None, created_at=None) -> int:
+def add_message(
+    thread_id: int,
+    role: str,
+    content: str,
+    conn=None,
+    created_at=None,
+    thread_context: str = "",
+    rag_context: str = "",
+) -> int:
     owns_connection = conn is None
     conn = conn or get_connection()
     try:
         if created_at:
             cursor = conn.execute(
                 """
-                INSERT INTO messages (thread_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO messages (thread_id, role, content, thread_context, rag_context, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (thread_id, role, content, created_at),
+                (thread_id, role, content, thread_context, rag_context, created_at),
             )
         else:
             cursor = conn.execute(
                 """
-                INSERT INTO messages (thread_id, role, content)
-                VALUES (?, ?, ?)
+                INSERT INTO messages (thread_id, role, content, thread_context, rag_context)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (thread_id, role, content),
+                (thread_id, role, content, thread_context, rag_context),
             )
         conn.execute(
             "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -181,7 +203,7 @@ def add_message(thread_id: int, role: str, content: str, conn=None, created_at=N
 def get_messages(thread_id: int):
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT id, thread_id, role, content, created_at
+            SELECT id, thread_id, role, content, thread_context, rag_context, created_at
             FROM messages
             WHERE thread_id = ?
             ORDER BY id ASC

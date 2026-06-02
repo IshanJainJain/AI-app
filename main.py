@@ -62,12 +62,7 @@ def startup():
 
 
 def build_context_prompt(global_context: str, messages, retrieval_context: str, prompt: str) -> str:
-    history_lines = []
-    for message in messages:
-        speaker = "User" if message["role"] == "user" else "Assistant"
-        history_lines.append(f"{speaker}: {message['content']}")
-
-    history_text = "\n".join(history_lines).strip() or "No prior messages in this thread."
+    history_text = format_thread_context(messages)
     global_text = global_context.strip() or "No shared global context has been set."
     retrieval_text = retrieval_context.strip() or "No relevant knowledge base chunks were retrieved."
 
@@ -93,7 +88,20 @@ def build_context_prompt(global_context: str, messages, retrieval_context: str, 
     )
 
 
-async def ask_llm(messages, prompt: str) -> str:
+def format_thread_context(messages, latest_prompt: str | None = None) -> str:
+    history_lines = []
+    for message in messages:
+        speaker = "User" if message["role"] == "user" else "Assistant"
+        history_lines.append(f"{speaker}: {message['content']}")
+
+    if latest_prompt is not None:
+        history_lines.append(f"User: {latest_prompt}")
+
+    history_text = "\n".join(history_lines).strip() or "No prior messages in this thread."
+    return history_text
+
+
+async def ask_llm(messages, prompt: str) -> dict:
     started_at = time.monotonic()
     try:
         retrieval_context = await asyncio.wait_for(
@@ -129,11 +137,20 @@ async def ask_llm(messages, prompt: str) -> str:
             response.raise_for_status()
     except httpx.HTTPError as exc:
         logger.warning("LLM request failed after %.2fs: %s", time.monotonic() - started_at, exc)
-        return f"Failed to contact LLM backend: {exc}"
+        answer = f"Failed to contact LLM backend: {exc}"
+        return {
+            "answer": answer,
+            "thread_context": format_thread_context(messages, prompt),
+            "rag_context": retrieval_context,
+        }
 
     data = response.json()
     logger.info("Prompt completed in %.2fs.", time.monotonic() - started_at)
-    return data.get("response", "").strip() or "The model returned an empty response."
+    return {
+        "answer": data.get("response", "").strip() or "The model returned an empty response.",
+        "thread_context": format_thread_context(messages, prompt),
+        "rag_context": retrieval_context,
+    }
 
 
 def thread_payload(thread_id: int):
@@ -203,10 +220,16 @@ async def handle_prompt(thread_id: int, request: PromptRequest):
 
     prompt = request.prompt.strip()
     previous_messages = get_messages(thread_id)
-    ai_response = await ask_llm(previous_messages, prompt)
+    ai_result = await ask_llm(previous_messages, prompt)
 
     add_message(thread_id, "user", prompt)
-    add_message(thread_id, "assistant", ai_response)
+    add_message(
+        thread_id,
+        "assistant",
+        ai_result["answer"],
+        thread_context=ai_result["thread_context"],
+        rag_context=ai_result["rag_context"],
+    )
 
     if not previous_messages:
         rename_thread(thread_id, title_from_prompt(prompt))
