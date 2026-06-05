@@ -1,419 +1,86 @@
-import hashlib
-import json
-import os
-from io import BytesIO
-from pathlib import Path
-
-import httpx
-
-SUPPORTED_DOCUMENT_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
-
-OLLAMA_EMBED_URL = os.getenv("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-EMBED_TIMEOUT_SECONDS = float(os.getenv("EMBED_TIMEOUT_SECONDS", "120"))
-OLLAMA_CHUNK_URL = os.getenv("OLLAMA_AGENTIC_CHUNK_URL", "http://localhost:11434/api/generate")
-AGENTIC_CHUNK_MODEL = os.getenv("AGENTIC_CHUNK_MODEL", "gemma3:1b")
-AGENTIC_CHUNK_TIMEOUT_SECONDS = float(os.getenv("AGENTIC_CHUNK_TIMEOUT_SECONDS", "300"))
-AGENTIC_CHUNK_TARGET_CHARS = int(os.getenv("AGENTIC_CHUNK_TARGET_CHARS", os.getenv("RAG_CHUNK_SIZE", "360")))
-AGENTIC_CHUNK_MAX_CHARS = int(os.getenv("AGENTIC_CHUNK_MAX_CHARS", "1800"))
-AGENTIC_CHUNK_WINDOW_SIZE = int(os.getenv("AGENTIC_CHUNK_WINDOW_SIZE", "5"))
-CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "360"))
-CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "0"))
-VECTOR_STORE_NAME = ".vector_store"
-AGENTIC_CHUNK_INTERACTION_LOG = "agentic_chunk_interactions.jsonl"
-
-
-def supported_document_types() -> str:
-    return ", ".join(sorted(SUPPORTED_DOCUMENT_EXTENSIONS))
-
-
-def parse_document(filename: str, content: bytes) -> str:
-    suffix = Path(filename).suffix.lower()
-    if suffix in {".txt", ".md"}:
-        return content.decode("utf-8", errors="replace")
-    if suffix == ".pdf":
-        return parse_pdf(content)
-    if suffix == ".docx":
-        return parse_docx(content)
-    raise ValueError(f"Unsupported document type. Use: {supported_document_types()}")
-
-
-def parse_pdf(content: bytes) -> str:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise RuntimeError("Install pypdf to ingest PDF documents.") from exc
-
-    reader = PdfReader(BytesIO(content))
-    return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
-
-
-def parse_docx(content: bytes) -> str:
-    try:
-        from docx import Document
-    except ImportError as exc:
-        raise RuntimeError("Install python-docx to ingest DOCX documents.") from exc
-
-    document = Document(BytesIO(content))
-    return "\n".join(paragraph.text for paragraph in document.paragraphs).strip()
-
-
-async def split_text(text: str, knowledge_base_dir: Path, relative_path: str) -> list[str]:
-    normalized = normalize_text(text)
-    if not normalized:
-        return []
-
-    base_chunks = fallback_split_text(normalized, CHUNK_SIZE, CHUNK_OVERLAP)
-    if not base_chunks:
-        return []
-
-    interaction_log_path = agentic_chunk_log_path(knowledge_base_dir)
-    refined_chunks = []
-    carryover = []
-    async with httpx.AsyncClient(timeout=AGENTIC_CHUNK_TIMEOUT_SECONDS) as client:
-        start = 0
-        first_window = True
-        while start < len(base_chunks):
-            window_size = AGENTIC_CHUNK_WINDOW_SIZE if first_window else max(1, AGENTIC_CHUNK_WINDOW_SIZE - 1)
-            window = base_chunks[start:start + window_size]
-            result = await agentic_refine_chunk_window(
-                client,
-                carryover,
-                window,
-                interaction_log_path,
-                relative_path,
-            )
-            if result is None:
-                refined_chunks.extend(carryover + window)
-                carryover = []
-                first_window = False
-                start += window_size
-                continue
-            refined_chunks.extend(result["final_chunks"])
-            carryover = result["carryover"]
-            if len(carryover) > 1:
-                carryover = ["\n\n".join(carryover).strip()]
-            first_window = False
-            start += window_size
-
-    refined_chunks.extend(carryover)
-    return normalize_agentic_chunks([chunk for chunk in refined_chunks if chunk])
-
-def normalize_text(text: str) -> str:
-
-    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
-
-
-async def agentic_refine_chunk_window(
-    client: httpx.AsyncClient,
-    carryover: list[str],
-    window: list[str],
-    interaction_log_path: Path,
-    relative_path: str,
-) -> dict | None:
-    prompt = build_agentic_chunk_prompt(carryover, window)
-    response_text = ""
-    error_message = None
-    result = None
-    try:
-        response = await client.post(
-            OLLAMA_CHUNK_URL,
-            json={
-                "model": AGENTIC_CHUNK_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0,
-                    "num_ctx": 8192,
-                },
-            },
-        )
-        response.raise_for_status()
-        response_text = response.json().get("response", "")
-        result = parse_agentic_chunk_response(response_text)
-        return result
-    except Exception as exc:
-        error_message = str(exc)
-        return None
-    finally:
-        await append_agentic_chunk_interaction(
-            interaction_log_path,
-            {
-                "source": relative_path,
-                "carryover_chunks": carryover,
-                "window_chunks": window,
-                "prompt": prompt,
-                "reply": response_text,
-                "parsed_result": {
-                    "final_chunks": result["final_chunks"] if isinstance(result, dict) else None,
-                    "carryover": result["carryover"] if isinstance(result, dict) else None,
-                },
-                "error": error_message,
-            },
-        )
-
-
-def build_agentic_chunk_prompt(carryover: list[str], window: list[str]) -> str:
-    carryover_text = format_numbered_chunks(carryover, "C")
-    window_text = format_numbered_chunks(window, "N")
-    return f"""You are refining confidential company knowledge-base chunks for retrieval.
-
-You will receive:
-- CARRYOVER chunks: text from the previous window that was not finalized because it may need to merge with upcoming context.
-- NEW chunks: the next {len(window)} recursive character chunks.
-
-The first request will receive 5 NEW chunks. Later requests will receive exactly 1 CARRYOVER chunk plus 4 NEW chunks.
-
-Decide whether these chunks should stay separate, be combined, or be broken further.
-Rules:
-- Preserve the original wording exactly.
-- Do not summarize, rewrite, redact, invent, or omit content.
-- Keep related clauses, definitions, exceptions, and steps together.
-- Prefer chunks around {AGENTIC_CHUNK_TARGET_CHARS} characters.
-- Do not exceed {AGENTIC_CHUNK_MAX_CHARS} characters unless a single paragraph is longer.
-- If text at the end may need the next window to form a complete semantic chunk, put it in "carryover".
-- Return at most one carryover chunk. If the trailing text needs to wait for the next call, put the full trailing text into "carryover".
-- "final_chunks" must contain only text that is complete enough to embed now.
-- "carryover" must contain only trailing text that should wait for the next window.
-- Return only valid JSON in this exact shape:
-{{"final_chunks":["complete chunk"],"carryover":["trailing chunk that may continue"]}}
-
-CARRYOVER chunks:
-{carryover_text or "(none)"}
-
-NEW chunks:
-{window_text}"""
-
-
-def format_numbered_chunks(chunks: list[str], prefix: str) -> str:
-    return "\n\n".join(
-        f"[{prefix}{index + 1}]\n{chunk}"
-        for index, chunk in enumerate(chunks)
-    )
-
-
-def agentic_chunk_log_path(knowledge_base_dir: Path) -> Path:
-    path = knowledge_base_dir / VECTOR_STORE_NAME / AGENTIC_CHUNK_INTERACTION_LOG
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-async def append_agentic_chunk_interaction(log_path: Path, record: dict) -> None:
-    record["timestamp"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def parse_agentic_chunk_response(response_text: str) -> dict | None:
-    response_text = response_text.strip()
-    if response_text.startswith("```"):
-        response_text = response_text.strip("`")
-        if response_text.startswith("json"):
-            response_text = response_text[4:].strip()
-
-    start = response_text.find("{")
-    end = response_text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    try:
-        payload = json.loads(response_text[start:end + 1])
-    except json.JSONDecodeError:
-        return None
-
-    final_chunks = payload.get("final_chunks", [])
-    carryover = payload.get("carryover", [])
-    if not isinstance(final_chunks, list) or not isinstance(carryover, list):
-        return None
-
-    return {
-        "final_chunks": clean_chunk_list(final_chunks),
-        "carryover": clean_chunk_list(carryover),
-    }
-
-
-def clean_chunk_list(chunks: list) -> list[str]:
-    return [chunk.strip() for chunk in chunks if isinstance(chunk, str) and chunk.strip()]
-
-
-def normalize_agentic_chunks(chunks: list[str]) -> list[str]:
-    normalized = []
-    for chunk in chunks:
-        if len(chunk) <= AGENTIC_CHUNK_MAX_CHARS:
-            normalized.append(chunk)
-        else:
-            normalized.extend(fallback_split_text(chunk, AGENTIC_CHUNK_MAX_CHARS, 0))
-    return normalized
-
-
-def fallback_split_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip()
-    if not normalized:
-        return []
-
-    chunks = recursive_split(normalized, chunk_size, ["\n\n", "\n", ". ", " ", ""])
-    merged = []
-    current = ""
-
-    for chunk in chunks:
-        if not chunk:
-            continue
-        if not current:
-            current = chunk
-            continue
-        candidate = f"{current}\n{chunk}"
-        if len(candidate) <= chunk_size:
-            current = candidate
-        else:
-            merged.append(current.strip())
-            overlap_text = current[-overlap:] if overlap > 0 else ""
-            current = f"{overlap_text}\n{chunk}".strip()
-
-    if current:
-        merged.append(current.strip())
-
-    return [chunk for chunk in merged if chunk]
-
-
-def recursive_split(text: str, chunk_size: int, separators: list[str]) -> list[str]:
-    if len(text) <= chunk_size:
-        return [text.strip()]
-
-    separator = separators[0]
-    remaining = separators[1:]
-    if separator == "":
-        return [text[index:index + chunk_size].strip() for index in range(0, len(text), chunk_size)]
-
-    pieces = text.split(separator)
-    if len(pieces) == 1:
-        return recursive_split(text, chunk_size, remaining)
-
-    chunks = []
-    current = ""
-    for piece in pieces:
-        piece = piece.strip()
-        if not piece:
-            continue
-        candidate = piece if not current else f"{current}{separator}{piece}"
-        if len(candidate) <= chunk_size:
-            current = candidate
-            continue
-        if current:
-            chunks.extend(recursive_split(current, chunk_size, remaining))
-        current = piece
-
-    if current:
-        chunks.extend(recursive_split(current, chunk_size, remaining))
-    return chunks
-
-
-async def embed_chunks(chunks: list[str]) -> list[list[float]]:
-    vectors = []
-    async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_SECONDS) as client:
-        for chunk in chunks:
-            response = await client.post(
-                OLLAMA_EMBED_URL,
-                json={"model": OLLAMA_EMBED_MODEL, "prompt": chunk},
-            )
-            response.raise_for_status()
-            data = response.json()
-            embedding = data.get("embedding")
-            if not embedding:
-                raise RuntimeError("Embedding model returned an empty vector.")
-            vectors.append(embedding)
-    return vectors
-
-
-async def ingest_document(
-    knowledge_base_dir: Path,
-    document_path: Path,
-    relative_path: str,
-    content: bytes,
-) -> dict:
-    text = parse_document(document_path.name, content)
-    chunks = await split_text(text, knowledge_base_dir, relative_path)
-    if not chunks:
-        raise ValueError("Document does not contain extractable text.")
-
-    vectors = await embed_chunks(chunks)
-    store_vectors(knowledge_base_dir, relative_path, chunks, vectors, content)
-    return {
-        "chunks": len(chunks),
-        "embedding_model": OLLAMA_EMBED_MODEL,
-    }
-
-
-def store_vectors(
-    knowledge_base_dir: Path,
-    relative_path: str,
-    chunks: list[str],
-    vectors: list[list[float]],
-    content: bytes,
-):
-    try:
-        import faiss
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("Install faiss-cpu and numpy to store document vectors.") from exc
-
-    vector_store_dir = knowledge_base_dir / VECTOR_STORE_NAME
-    vector_store_dir.mkdir(exist_ok=True)
-    index_path = vector_store_dir / "faiss.index"
-    chunks_path = vector_store_dir / "chunks.json"
-
-    matrix = np.array(vectors, dtype="float32")
-    faiss.normalize_L2(matrix)
-
-    if index_path.exists():
-        index = faiss.read_index(str(index_path))
-        if index.d != matrix.shape[1]:
-            raise RuntimeError("Existing FAISS index dimension does not match the embedding model.")
-    else:
-        index = faiss.IndexFlatIP(matrix.shape[1])
-
-    existing_chunks = []
-    if chunks_path.exists():
-        existing_chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
-
-    document_hash = hashlib.sha256(content).hexdigest()
-    start_index = len(existing_chunks)
-    records = []
-    for offset, chunk in enumerate(chunks):
-        records.append({
-            "id": start_index + offset,
-            "text": chunk,
-            "metadata": {
-                "source": relative_path,
-                "chunk": offset,
-                "sha256": document_hash,
-                "embedding_model": OLLAMA_EMBED_MODEL,
-                "chunking_model": AGENTIC_CHUNK_MODEL,
-            },
-        })
-
-    index.add(matrix)
-    faiss.write_index(index, str(index_path))
-    chunks_path.write_text(
-        json.dumps(existing_chunks + records, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def chunks_for_document(knowledge_base_dir: Path, relative_path: str) -> dict:
-    chunks_path = knowledge_base_dir / VECTOR_STORE_NAME / "chunks.json"
-    if not chunks_path.exists():
-        return {"source": relative_path, "chunks": []}
-
-    records = json.loads(chunks_path.read_text(encoding="utf-8"))
-    chunks = [
-        {
-            "id": record["id"],
-            "chunk": record["metadata"].get("chunk", 0),
-            "text": record["text"],
-            "metadata": record["metadata"],
-        }
-        for record in records
-        if record.get("metadata", {}).get("source") == relative_path
-    ]
-    chunks.sort(key=lambda item: item["chunk"])
-    return {"source": relative_path, "chunks": chunks}
+from rag_chunking import (
+    AGENTIC_CHUNK_INTERACTION_LOG,
+    AGENTIC_CHUNK_MAX_CHARS,
+    AGENTIC_CHUNK_MODEL,
+    AGENTIC_CHUNK_TARGET_CHARS,
+    AGENTIC_CHUNK_TIMEOUT_SECONDS,
+    AGENTIC_CHUNK_WINDOW_SIZE,
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    fallback_split_text,
+    split_text,
+)
+from rag_config import (
+    BM25_INDEX_NAME,
+    EMBED_TIMEOUT_SECONDS,
+    MAX_CONTEXT_TOKENS,
+    OLLAMA_CHUNK_URL,
+    OLLAMA_EMBED_MODEL,
+    OLLAMA_EMBED_URL,
+    RERANKER_DEVICE,
+    RERANKER_MODEL,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    VECTOR_STORE_NAME,
+)
+from rag_embedding import embed_chunks, embed_query
+from rag_parsing import parse_docx, parse_document, parse_pdf, supported_document_types
+from rag_retrieval import hybrid_retrieval, retrieve_context
+from rag_store import (
+    bm25_search,
+    build_bm25_index,
+    build_context,
+    chunk_identity,
+    count_tokens,
+    faiss_search,
+    get_reranker,
+    load_bm25_index,
+    rerank_chunks,
+    save_bm25_index,
+    select_context,
+    store_vectors,
+    tokenize_for_bm25,
+)
+
+__all__ = [
+    "AGENTIC_CHUNK_INTERACTION_LOG",
+    "AGENTIC_CHUNK_MAX_CHARS",
+    "AGENTIC_CHUNK_MODEL",
+    "AGENTIC_CHUNK_TARGET_CHARS",
+    "AGENTIC_CHUNK_TIMEOUT_SECONDS",
+    "AGENTIC_CHUNK_WINDOW_SIZE",
+    "BM25_INDEX_NAME",
+    "CHUNK_OVERLAP",
+    "CHUNK_SIZE",
+    "EMBED_TIMEOUT_SECONDS",
+    "MAX_CONTEXT_TOKENS",
+    "OLLAMA_CHUNK_URL",
+    "OLLAMA_EMBED_MODEL",
+    "OLLAMA_EMBED_URL",
+    "RERANKER_DEVICE",
+    "RERANKER_MODEL",
+    "SUPPORTED_DOCUMENT_EXTENSIONS",
+    "VECTOR_STORE_NAME",
+    "bm25_search",
+    "build_bm25_index",
+    "build_context",
+    "chunk_identity",
+    "count_tokens",
+    "embed_chunks",
+    "embed_query",
+    "faiss_search",
+    "fallback_split_text",
+    "get_reranker",
+    "hybrid_retrieval",
+    "load_bm25_index",
+    "parse_docx",
+    "parse_document",
+    "parse_pdf",
+    "rerank_chunks",
+    "retrieve_context",
+    "save_bm25_index",
+    "select_context",
+    "split_text",
+    "store_vectors",
+    "supported_document_types",
+    "tokenize_for_bm25",
+]
