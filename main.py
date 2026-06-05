@@ -29,9 +29,12 @@ from DATABASE import (
     set_global_context,
     title_from_prompt,
 )
+from knowledge_base_api import init_knowledge_base, router as knowledge_base_router
+from templates import render_page
 from routers.auth import router as auth_router
 
 app = FastAPI()
+app.include_router(knowledge_base_router)
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # During development: allow Vite dev server.
@@ -88,6 +91,7 @@ class ImageContextRequest(BaseModel):
 @app.on_event("startup")
 def startup():
     init_db()
+    init_knowledge_base()
 
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
