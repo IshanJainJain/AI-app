@@ -51,6 +51,8 @@ def init_db():
                 thread_id  INTEGER NOT NULL,
                 role       TEXT    NOT NULL CHECK(role IN ('user', 'assistant')),
                 content    TEXT    NOT NULL,
+                thread_context TEXT DEFAULT '',
+                rag_context TEXT DEFAULT '',
                 created_at TEXT    DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
             )
@@ -70,7 +72,19 @@ def init_db():
         """)
 
         _run_migrations(conn)
+		ensure_message_context_columns(conn)
         migrate_old_logs(conn)
+
+
+def ensure_message_context_columns(conn):
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+    }
+    if "thread_context" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN thread_context TEXT DEFAULT ''")
+    if "rag_context" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN rag_context TEXT DEFAULT ''")
 
 
 def _run_migrations(conn):
@@ -238,6 +252,36 @@ def delete_image_context(thread_id: int, image_context_id: int):
         return cursor.rowcount > 0
 
 
+def migrate_old_logs(conn):
+    old_logs_exists = conn.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name = 'logs'
+    """).fetchone()
+    if not old_logs_exists:
+        return
+
+    migrated = conn.execute("""
+        SELECT 1 FROM threads
+        WHERE title = 'Previous conversation'
+        LIMIT 1
+    """).fetchone()
+    if migrated:
+        return
+
+    old_logs = conn.execute("""
+        SELECT prompt, response, created_at
+        FROM logs
+        ORDER BY id ASC
+    """).fetchall()
+    if not old_logs:
+        return
+
+    thread_id = create_thread("Previous conversation", conn=conn)
+    for row in old_logs:
+        created_at = row["created_at"] if "created_at" in row.keys() else None
+        add_message(thread_id, "user", row["prompt"], conn=conn, created_at=created_at)
+        add_message(thread_id, "assistant", row["response"], conn=conn, created_at=created_at)
+
 # ── Threads ───────────────────────────────────────────────────────────────────
 
 def create_thread(user_id: int, title: str = "New conversation", conn=None) -> int:
@@ -321,19 +365,33 @@ def rename_thread(thread_id: int, user_id: int, title: str):
 
 # ── Messages ──────────────────────────────────────────────────────────────────
 
-def add_message(thread_id: int, role: str, content: str, conn=None, created_at=None) -> int:
+def add_message(
+    thread_id: int,
+    role: str,
+    content: str,
+    conn=None,
+    created_at=None,
+    thread_context: str = "",
+    rag_context: str = "",
+) -> int:
     owns_connection = conn is None
     conn = conn or get_connection()
     try:
         if created_at:
             cursor = conn.execute(
-                "INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (thread_id, role, content, created_at),
+                """
+                INSERT INTO messages (thread_id, role, content, thread_context, rag_context, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (thread_id, role, content, thread_context, rag_context, created_at),
             )
         else:
             cursor = conn.execute(
-                "INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)",
-                (thread_id, role, content),
+                """
+                INSERT INTO messages (thread_id, role, content, thread_context, rag_context)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (thread_id, role, content, thread_context, rag_context),
             )
         conn.execute(
             "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -350,7 +408,7 @@ def add_message(thread_id: int, role: str, content: str, conn=None, created_at=N
 def get_messages(thread_id: int):
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT id, thread_id, role, content, created_at
+            SELECT id, thread_id, role, content, thread_context, rag_context, created_at
             FROM messages
             WHERE thread_id = ?
             ORDER BY id ASC

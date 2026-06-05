@@ -1,66 +1,303 @@
-# RAG Ingestion Pipeline
+# RAG System Structure
 
-This project has a local Retrieval-Augmented Generation ingestion path for the Knowledge Base. The current work covers ingestion, chunk storage, FAISS vector storage, and chunk inspection from the UI. Retrieval into chat answers can be added on top of the same FAISS index later.
+This app has a local Retrieval-Augmented Generation path for the Knowledge Base. Documents are uploaded through the UI, parsed into text, chunked, embedded with Ollama, stored in FAISS/BM25 indexes, retrieved during chat, and injected into the final prompt sent to the local chat model.
 
-## What Is Done
+The whole path is designed to stay local when Ollama runs on the same VM.
 
-When a user uploads a document in the Knowledge Base:
+## High-Level Flow
 
-1. The FastAPI upload route receives the file.
-2. The file is validated for name, type, size, and target folder.
-3. The file is written into `knowledge_base/`.
-4. The document is parsed into plain text.
-5. The text is split into semantic chunks by the local chunking LLM.
-6. Each chunk is embedded with a local Ollama embedding model.
-7. The embeddings are normalized and appended to a FAISS index.
-8. Chunk text and metadata are written to JSON alongside the FAISS index.
-9. The upload returns success only after indexing succeeds.
-10. If ingestion fails, the uploaded file is deleted so the file list does not show an unindexed document.
+```text
+User uploads document
+  -> FastAPI Knowledge Base route
+  -> File validation and save under knowledge_base/
+  -> Text parsing
+  -> Recursive chunking
+  -> Optional agentic chunk refinement with Ollama /api/generate
+  -> Embedding with Ollama /api/embeddings
+  -> FAISS vector index update
+  -> BM25 keyword index update
+  -> chunks.json metadata update
 
-This is intentionally synchronous per upload. The app does not wait for a batch job that vectorizes all documents together. Each newly uploaded document is ingested immediately and incrementally appended to the vector database.
+User sends chat prompt
+  -> FastAPI chat route
+  -> Query embedding
+  -> FAISS semantic search
+  -> BM25 keyword search
+  -> Candidate merge
+  -> Optional reranking
+  -> Context selection
+  -> Prompt assembly
+  -> Ollama /api/generate chat answer
+  -> Thread history saved in history.db
+```
 
-## Files Involved
+## Repository Structure
 
-- `knowledge_base_api.py`
-  - Defines Knowledge Base API routes.
-  - Handles folder browsing, folder creation, upload validation, and document chunk lookup.
-  - Calls the ingestion pipeline after saving each uploaded document.
+```text
+AI-app/
+  main.py
+  templates.py
+  knowledge_base_api.py
+  knowledge_base_templates.py
+  rag_config.py
+  rag_parsing.py
+  rag_chunking.py
+  rag_embedding.py
+  rag_store.py
+  rag_retrieval.py
+  rag_ingestion.py
+  rag_reindex.py
+  DATABASE.py
+  history.db
+  requirements.txt
+  .env.example
+  .gitignore
+  RAG.md
 
-- `rag_ingestion.py`
-  - Parses uploaded files.
-  - Splits text into chunks.
-  - Calls Ollama embeddings.
-  - Stores vectors in FAISS.
-  - Stores chunk text and metadata in JSON.
-  - Reads chunks back for the Knowledge Base document viewer.
+  knowledge_base/                 Runtime only, git-ignored
+    uploaded-file.pdf
+    folder/
+      uploaded-file.docx
+    .vector_store/
+      faiss.index
+      chunks.json
+      bm25.pkl
+    agentic_chunk_interactions.jsonl
+```
 
-- `knowledge_base_templates.py`
-  - Adds the Knowledge Base UI.
-  - Uploads documents.
-  - Lets users click documents and inspect all chunks for that document.
+`knowledge_base/` may not exist in a fresh checkout. It is created at app startup by `init_knowledge_base()`.
 
-- `knowledge_base/`
-  - Runtime-only local document storage.
-  - Ignored by git because it may contain company policies, secrets, and embeddings.
+## Python File Responsibilities
 
-## Supported Documents
+### `main.py`
 
-The uploader currently supports:
+Owns the chat application and FastAPI app setup.
+
+Key responsibilities:
+
+- Creates the `FastAPI` app.
+- Includes the Knowledge Base router from `knowledge_base_api.py`.
+- Initializes SQLite and the Knowledge Base folder on startup.
+- Serves the main HTML UI.
+- Handles conversation/thread API routes.
+- Calls `retrieve_context()` before each LLM answer.
+- Builds the final prompt with global context, thread history, retrieved chunks, and the latest user question.
+- Calls the configured Ollama generation endpoint.
+
+Important routes:
+
+```text
+GET  /
+GET  /api/global-context
+PUT  /api/global-context
+GET  /api/threads
+POST /api/threads
+GET  /api/threads/{thread_id}
+PATCH /api/threads/{thread_id}
+POST /api/threads/{thread_id}/prompt
+```
+
+### `templates.py`
+
+Builds the main HTML/CSS/JavaScript for the chat UI.
+
+Key responsibilities:
+
+- Renders the chat layout.
+- Renders thread list, messages, rename controls, prompt composer, and global context editor.
+- Sends prompt requests to `/api/threads/{thread_id}/prompt`.
+- Shows progress messages while retrieval and local generation are running.
+- Injects Knowledge Base UI fragments from `knowledge_base_templates.py`.
+
+### `knowledge_base_api.py`
+
+Owns Knowledge Base HTTP routes and file safety.
+
+Key responsibilities:
+
+- Creates `knowledge_base/` at startup.
+- Validates folder/file names.
+- Prevents path traversal outside `knowledge_base/`.
+- Lists folders and files.
+- Creates folders.
+- Uploads supported documents.
+- Calls `ingest_document()` after upload.
+- Deletes uploaded files/folders.
+- Returns stored chunks for a document.
+
+Important routes:
+
+```text
+GET    /api/knowledge-base
+GET    /api/knowledge-base/files/chunks
+POST   /api/knowledge-base/folders
+POST   /api/knowledge-base/files
+DELETE /api/knowledge-base/files
+DELETE /api/knowledge-base/folders
+```
+
+### `knowledge_base_templates.py`
+
+Builds the Knowledge Base UI embedded in the main page.
+
+Key responsibilities:
+
+- Renders the Knowledge Base menu button and panel.
+- Handles folder navigation.
+- Handles document upload.
+- Shows upload/indexing status.
+- Shows chunks for a selected document.
+- Calls Knowledge Base API routes from browser JavaScript.
+
+### `rag_config.py`
+
+Central configuration for RAG behavior.
+
+Key responsibilities:
+
+- Defines supported document extensions.
+- Reads Ollama embedding and chunking endpoints from environment variables.
+- Reads chunking sizes, timeouts, retrieval limits, reranker settings, and context token limits.
+- Defines vector store filenames.
+
+### `rag_parsing.py`
+
+Converts uploaded document bytes into plain text.
+
+Supported formats:
 
 - `.txt`
 - `.md`
 - `.pdf`
 - `.docx`
 
-Parsing behavior:
+Parsing libraries:
 
-- `.txt` and `.md` are decoded as UTF-8 with replacement for invalid characters.
-- `.pdf` is parsed with `pypdf.PdfReader`.
-- `.docx` is parsed with `python-docx`.
+- `.pdf` uses `pypdf`.
+- `.docx` uses `python-docx`.
+- `.txt` and `.md` decode as UTF-8 with replacement.
 
-Scanned PDFs that contain only images will usually produce little or no text. OCR is not implemented yet.
+Scanned image-only PDFs usually produce little or no text because OCR is not implemented.
 
-## Storage Layout
+### `rag_chunking.py`
+
+Splits parsed text into chunks.
+
+Key responsibilities:
+
+- Normalizes whitespace.
+- Creates deterministic recursive chunks first.
+- Optionally refines each chunk window with a local Ollama generation model.
+- Parses strict JSON from the chunking model.
+- Falls back to deterministic chunks when the model times out or returns malformed JSON.
+- Logs agentic chunk interactions to `knowledge_base/agentic_chunk_interactions.jsonl`.
+
+Recursive splitter separators:
+
+```python
+["\n\n", "\n", ". ", " ", ""]
+```
+
+Expected agentic chunk response shape:
+
+```json
+{"final_chunks": ["complete chunk"], "carryover": ["trailing chunk"]}
+```
+
+### `rag_embedding.py`
+
+Embeds chunks and user queries with Ollama.
+
+Key responsibilities:
+
+- Calls `OLLAMA_EMBED_URL`.
+- Uses `OLLAMA_EMBED_MODEL`.
+- Sends one chunk/query per embedding request.
+- Returns embedding vectors as lists of floats.
+
+Default endpoint:
+
+```text
+http://localhost:11434/api/embeddings
+```
+
+### `rag_store.py`
+
+Stores and searches retrieval indexes.
+
+Key responsibilities:
+
+- Loads and writes `chunks.json`.
+- Creates/appends FAISS vectors.
+- Normalizes vectors before storage.
+- Builds and saves the BM25 keyword index.
+- Searches FAISS.
+- Searches BM25.
+- Deduplicates chunk identities.
+- Optionally reranks candidate chunks with `FlagEmbedding`.
+- Selects retrieved context under a token budget.
+- Formats selected chunks for prompt injection.
+
+Stored index files:
+
+```text
+knowledge_base/.vector_store/faiss.index
+knowledge_base/.vector_store/chunks.json
+knowledge_base/.vector_store/bm25.pkl
+```
+
+### `rag_retrieval.py`
+
+Defines the chat-time retrieval path used by `main.py`.
+
+Key responsibilities:
+
+- Runs FAISS semantic search.
+- Runs BM25 keyword search.
+- Merges and deduplicates candidates.
+- Applies optional reranking.
+- Selects chunks under `MAX_CONTEXT_TOKENS`.
+- Returns formatted context text for the final chat prompt.
+
+This is the retrieval module imported by `main.py`.
+
+### `rag_ingestion.py`
+
+Coordinates document ingestion.
+
+Key responsibilities:
+
+- Parses uploaded files with `parse_document()`.
+- Chunks text with `split_text()`.
+- Embeds chunks with `embed_chunks()`.
+- Stores vectors and metadata with `store_vectors()`.
+- Returns indexing metadata to the upload route.
+
+### `rag_reindex.py`
+
+Rebuild helper for Knowledge Base indexes.
+
+Key responsibilities:
+
+- Re-reads documents from `knowledge_base/`.
+- Re-parses, re-chunks, re-embeds, and re-stores indexes.
+- Useful after changing embedding model, chunking strategy, or index files.
+
+### `DATABASE.py`
+
+Stores non-RAG chat state in SQLite.
+
+Key responsibilities:
+
+- Creates and migrates `history.db`.
+- Stores global context.
+- Stores threads and messages.
+- Provides thread/message CRUD helpers.
+- Generates a short thread title from the first prompt.
+
+## Runtime Storage
+
+### Source Documents
 
 Uploaded source documents are saved under:
 
@@ -68,14 +305,29 @@ Uploaded source documents are saved under:
 knowledge_base/
 ```
 
-The vector database and chunk metadata are saved under:
+Example:
 
 ```text
-knowledge_base/.vector_store/faiss.index
-knowledge_base/.vector_store/chunks.json
+knowledge_base/hr/leave-policy.pdf
 ```
 
-`faiss.index` contains the vector embeddings.
+### Vector Store
+
+RAG indexes are saved under:
+
+```text
+knowledge_base/.vector_store/
+```
+
+Files:
+
+```text
+faiss.index   Binary FAISS vector index
+chunks.json   Raw chunk text and metadata
+bm25.pkl      Pickled BM25 keyword index
+```
+
+### Chunk Metadata Shape
 
 `chunks.json` contains records like:
 
@@ -87,15 +339,24 @@ knowledge_base/.vector_store/chunks.json
     "source": "folder/policy.pdf",
     "chunk": 0,
     "sha256": "document hash",
-    "embedding_model": "nomic-embed-text",
-    "chunking_model": "ministral-3:latest"
+    "embedding_model": "nomic-embed-text"
   }
 }
 ```
 
-The `source` field connects chunks back to the original uploaded document. The Knowledge Base UI uses this to show all chunks when a document is clicked.
+The `source` field connects stored chunks back to the uploaded document. The UI uses it when showing chunks for a clicked document.
 
-## Ingestion Details
+### Agentic Chunk Log
+
+Agentic chunking interactions are appended to:
+
+```text
+knowledge_base/agentic_chunk_interactions.jsonl
+```
+
+Each line records the model, source document, input window, raw response, and parsed output/error. This is useful when diagnosing bad chunking.
+
+## Ingestion Flow
 
 ### 1. Upload Validation
 
@@ -109,11 +370,11 @@ POST /api/knowledge-base/files
 
 Validates:
 
-- parent folder exists
-- filename is safe
-- extension is supported
-- file size is below the configured maximum
-- no file/folder already exists with the same name
+- Parent folder exists.
+- Filename is safe.
+- Extension is supported.
+- File size is below `MAX_DOCUMENT_BYTES`.
+- No file/folder already exists with the same name.
 
 Allowed filename characters:
 
@@ -125,49 +386,54 @@ Path traversal is blocked by resolving paths and ensuring they stay inside `know
 
 ### 2. Parsing
 
-Implemented in `parse_document()` in `rag_ingestion.py`.
+Implemented in `rag_parsing.py`.
 
-The parser converts each uploaded document into plain text. If no text can be extracted, ingestion fails.
+The parser converts uploaded document bytes into plain text. If no text can be extracted, ingestion fails and the uploaded file is removed so the UI does not show an unindexed document.
 
-### 3. Hybrid Recursive + Agentic Chunking
+### 3. Recursive Chunking
 
-Implemented in `split_text()`, `fallback_split_text()`, and `agentic_refine_chunk_window()` in `rag_ingestion.py`.
+Implemented in `rag_chunking.py`.
 
-The pipeline now starts with deterministic recursive character chunking, then asks local `ministral-3:latest` to refine those chunks semantically.
+The text is normalized and split with the deterministic recursive splitter using:
 
-Step by step:
-
-1. The full parsed text is normalized.
-2. The normalized text is split with the recursive splitter using `RAG_CHUNK_SIZE=360` and `RAG_CHUNK_OVERLAP=0` by default.
-3. The first 5 recursive chunks are sent to `ministral-3:latest`.
-4. the model decides whether those chunks should stay separate, be combined, or be broken further.
-5. Gemma can return completed chunks in `final_chunks` and trailing uncertain text in `carryover`.
-6. The next request sends that `carryover` plus the next 5 recursive chunks.
-7. This lets Gemma combine across window boundaries. For example, if 7 recursive chunks belong together, Gemma can carry over the first 5, then combine them after seeing the next 5.
-8. After all windows are processed, any remaining carryover is finalized and embedded.
-
-The recursive fallback splitter tries separators in this order:
-
-```python
-["\n\n", "\n", ". ", " ", ""]
+```text
+RAG_CHUNK_SIZE=360
+RAG_CHUNK_OVERLAP=0
 ```
 
-The chunk refinement prompt tells Gemma to:
+These recursive chunks are the stable fallback and the input to the agentic refinement step.
 
-- preserve original wording exactly
-- avoid summaries or rewrites
-- keep related policy clauses together
-- decide whether to combine, split, or keep chunks as-is
-- use `carryover` when trailing text may need the next window
-- return strict JSON in the shape `{"final_chunks": [...], "carryover": [...]}`
+### 4. Agentic Chunk Refinement
 
-If Gemma fails, times out, or returns malformed JSON for a window, that window falls back to the already-created recursive chunks so document upload remains usable.
+Implemented in `agentic_refine_chunk_window()` in `rag_chunking.py`.
 
-### 4. Embedding
+The app sends a small window of recursive chunks to Ollama:
 
-Implemented in `embed_chunks()` in `rag_ingestion.py`.
+```text
+POST http://localhost:11434/api/generate
+```
 
-Each chunk is sent to Ollama:
+Default configured model:
+
+```text
+AGENTIC_CHUNK_MODEL=gemma3:1b
+```
+
+For the VM setup used here, the intended model is:
+
+```text
+AGENTIC_CHUNK_MODEL=ministral-3:latest
+```
+
+The model is asked to preserve exact wording, combine related clauses, split oversized text, and return strict JSON.
+
+If the model fails, times out, or returns malformed JSON, that window falls back to the deterministic recursive chunks.
+
+### 5. Embedding
+
+Implemented in `rag_embedding.py`.
+
+Each final chunk is sent to Ollama:
 
 ```text
 POST http://localhost:11434/api/embeddings
@@ -179,341 +445,334 @@ Default model:
 nomic-embed-text
 ```
 
-This keeps company policy documents local to the VM, assuming Ollama is running locally there.
+### 6. FAISS and BM25 Storage
 
-### 5. FAISS Storage
-
-Implemented in `store_vectors()` in `rag_ingestion.py`.
+Implemented in `rag_store.py`.
 
 The pipeline:
 
 1. Converts embeddings to `float32`.
 2. L2-normalizes vectors with `faiss.normalize_L2`.
 3. Stores vectors in `faiss.IndexFlatIP`.
-4. Appends new vectors to the existing index.
-5. Writes the updated index to `faiss.index`.
-6. Appends chunk records to `chunks.json`.
+4. Appends vectors to the existing index.
+5. Appends chunk records to `chunks.json`.
+6. Rebuilds and saves `bm25.pkl`.
 
 Because vectors are normalized and stored in `IndexFlatIP`, inner product behaves like cosine similarity.
 
-## Hyperparameters
+## Retrieval Flow
 
-### `OLLAMA_EMBED_URL`
+### 1. Chat Prompt Received
 
-Default:
+Implemented in `main.py`.
+
+The route:
 
 ```text
-http://localhost:11434/api/embeddings
+POST /api/threads/{thread_id}/prompt
 ```
 
-Purpose:
-Controls where embedding requests are sent.
+loads previous messages, then calls:
 
-Why this default:
-It matches local Ollama and keeps documents inside the VM/local machine.
-
-Impact of changing:
-- Pointing to a remote URL may expose confidential documents to another machine.
-- Pointing to a faster local Ollama server can improve ingestion speed.
-
-### `OLLAMA_EMBED_MODEL`
-
-Default:
-
-```text
-nomic-embed-text
+```python
+retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS)
 ```
 
-Purpose:
-Controls which embedding model creates vectors.
-
-Why this default:
-`nomic-embed-text` is a common local embedding model supported by Ollama, good enough for general document retrieval, and practical for VM/local use.
-
-Impact of changing:
-- Better embedding models can improve retrieval quality.
-- Larger models may slow ingestion.
-- Changing the model after vectors already exist can cause dimension mismatches or mixed embedding spaces.
-- If you change the embedding model, it is safest to rebuild `knowledge_base/.vector_store/`.
-
-### `EMBED_TIMEOUT_SECONDS`
-
-Default:
+Retrieval is wrapped in a timeout controlled by:
 
 ```text
-120
+RAG_RETRIEVAL_TIMEOUT_SECONDS=30
 ```
 
-Purpose:
-Maximum time allowed for embedding requests.
+If retrieval fails or times out, the app still answers without Knowledge Base context.
 
-Why this default:
-Large policy documents can create many chunks, and local embedding models may be slow on CPU-only VMs.
+### 2. FAISS Semantic Search
 
-Impact of changing:
-- Higher values reduce timeout failures on slow machines.
-- Lower values fail faster when Ollama is stuck or unavailable.
+Implemented in `faiss_search()` in `rag_store.py`.
 
-### `OLLAMA_AGENTIC_CHUNK_URL`
+Steps:
 
-Default:
+1. Embed the user query with `embed_query()`.
+2. Load `faiss.index`.
+3. Normalize the query vector.
+4. Search the top `RAG_TOP_K` vector matches.
+5. Read matching chunk text/metadata from `chunks.json`.
+
+### 3. BM25 Keyword Search
+
+Implemented in `bm25_search()` in `rag_store.py`.
+
+Steps:
+
+1. Tokenize the user query.
+2. Load `bm25.pkl`.
+3. Score stored chunks with BM25.
+4. Return the top `RAG_TOP_K` keyword matches.
+
+### 4. Candidate Merge
+
+Implemented in `hybrid_retrieval()` in `rag_retrieval.py`.
+
+FAISS and BM25 results are concatenated, deduplicated by source/chunk/text identity, and trimmed to `RAG_TOP_K`.
+
+### 5. Optional Reranking
+
+Implemented in `rerank_chunks()` in `rag_store.py`.
+
+Reranking is disabled by default:
 
 ```text
-http://localhost:11434/api/generate
+RERANKER_ENABLED=0
 ```
 
-Purpose:
-Controls where agentic chunking requests are sent.
+Reason:
 
-Why this default:
-It uses the local Ollama generation endpoint, so policy text stays on the VM.
+`FlagEmbedding` reranker loading can be slow on small VMs and can make the frontend appear stuck during chat. Enable it only when the reranker model is already available and the VM has enough CPU/RAM.
 
-Impact of changing:
-- Pointing this to a remote endpoint may expose confidential policy text.
-- Pointing it to a faster local Ollama host can improve ingestion speed.
+Enable with:
 
-### `AGENTIC_CHUNK_MODEL`
-
-Default:
-
-```text
-ministral-3:latest
+```bash
+RERANKER_ENABLED=1 RERANKER_MODEL=BAAI/bge-reranker-base
 ```
 
-Purpose:
-Controls which local LLM decides semantic chunk boundaries.
+### 6. Context Selection
 
-Why this default:
-You already have `ministral-3:latest` downloaded locally, and it is lightweight enough for VM usage. It is used only to decide chunk boundaries, not to answer with or store policy content externally.
+Implemented in `select_context()` in `rag_store.py`.
 
-Impact of changing:
-- A stronger local model may create cleaner semantic chunks.
-- A larger model may slow ingestion substantially.
-- A weaker model may return malformed JSON more often, causing fallback chunking.
-
-### `AGENTIC_CHUNK_TIMEOUT_SECONDS`
-
-Default:
+The selected chunks are capped by:
 
 ```text
-300
+MAX_CONTEXT_TOKENS=6000
 ```
 
-Purpose:
-Maximum time allowed for each agentic chunking request.
+Token counting uses `tiktoken` when available, with a character-count fallback.
 
-Why this default:
-`ministral-3:latest` may be running on a CPU VM, and large paragraph batches can take time.
+### 7. Prompt Injection
 
-Impact of changing:
-- Higher values reduce timeout failures on slow hardware.
-- Lower values fail faster and use fallback splitting more often.
+Implemented in `build_context_prompt()` in `main.py`.
 
-### `AGENTIC_CHUNK_WINDOW_SIZE`
+The final prompt contains:
 
-Default:
+1. Global context.
+2. Current thread history.
+3. Retrieved Knowledge Base chunks.
+4. Latest user question.
+
+The assistant is instructed to prioritize the latest question and Knowledge Base chunks, avoid invented facts, and answer conservatively if sources conflict.
+
+## Configuration
+
+### Chat Model
 
 ```text
-5
+OLLAMA_URL=http://localhost:11434/api/generate
+OLLAMA_MODEL=devstral
+LLM_TIMEOUT_SECONDS=20
 ```
 
-Purpose:
-Number of recursive chunks sent to Gemma in each refinement request.
-
-Why this default:
-Five 360-character chunks give the model enough local context to see short policy sections while keeping prompts small for `ministral-3:latest`.
-
-Impact of changing:
-- Higher values give Gemma more context per call, but increase latency and context pressure.
-- Lower values make calls faster but increase the chance that related clauses are split across windows.
-- The carryover mechanism still allows cross-window merges, but smaller windows may require more carryover rounds.
-
-### `AGENTIC_CHUNK_TARGET_CHARS`
-
-Default:
+Recommended VM override for this setup:
 
 ```text
-360
+OLLAMA_MODEL=ministral-3:latest
+LLM_TIMEOUT_SECONDS=300
 ```
 
-Purpose:
-Target chunk size, measured in characters, that the LLM is asked to aim for.
-
-Why this default:
-It is large enough to preserve meaningful policy context but small enough to keep embeddings focused. Policy documents often contain clauses, exceptions, and definitions that need nearby context.
-
-Impact of changing:
-- Smaller targets:
-  - More precise retrieval.
-  - More chunks and embeddings.
-  - More storage and slower ingestion.
-  - Higher risk of losing context around a policy clause.
-- Larger targets:
-  - Better context preservation.
-  - Fewer embeddings and faster ingestion.
-  - Retrieval may become less precise because each vector represents broader text.
-
-### `AGENTIC_CHUNK_MAX_CHARS`
-
-Default:
+### Embedding
 
 ```text
-1800
+OLLAMA_EMBED_URL=http://localhost:11434/api/embeddings
+OLLAMA_EMBED_MODEL=nomic-embed-text
+EMBED_TIMEOUT_SECONDS=120
 ```
 
-Purpose:
-Hard-ish maximum chunk size. If the LLM returns a chunk larger than this, the code deterministically splits it.
+Changing the embedding model after vectors already exist can create dimension mismatches or mixed embedding spaces. If you change `OLLAMA_EMBED_MODEL`, rebuild `knowledge_base/.vector_store/`.
 
-Why this default:
-It gives `ministral-3:latest` room to keep a full policy clause together while preventing very large chunks from becoming too broad for retrieval.
-
-Impact of changing:
-- Higher values preserve more context but reduce retrieval precision.
-- Lower values keep chunks focused but can split long clauses or procedural sections.
-
-### `RAG_CHUNK_SIZE`
-
-Default:
+### Agentic Chunking
 
 ```text
-360
+OLLAMA_AGENTIC_CHUNK_URL=http://localhost:11434/api/generate
+AGENTIC_CHUNK_MODEL=gemma3:1b
+AGENTIC_CHUNK_TIMEOUT_SECONDS=300
+AGENTIC_CHUNK_WINDOW_SIZE=5
+AGENTIC_CHUNK_TARGET_CHARS=360
+AGENTIC_CHUNK_MAX_CHARS=1800
 ```
 
-Purpose:
-Initial recursive character chunk size. These chunks are the units that get sent to Gemma for refinement.
-
-Impact of changing:
-- Smaller values give Gemma finer-grained pieces to recombine, but create more chunks and more LLM refinement calls.
-- Larger values reduce refinement calls, but Gemma has less control over where to break oversized initial chunks.
-- It also changes the default agentic target size unless `AGENTIC_CHUNK_TARGET_CHARS` is explicitly set.
-
-### `RAG_CHUNK_OVERLAP`
-
-Default:
+Recommended VM override for this setup:
 
 ```text
-0
+AGENTIC_CHUNK_MODEL=ministral-3:latest
 ```
 
-Purpose:
-Initial recursive chunk overlap.
-
-Impact of changing:
-- `0` avoids duplicated text before Gemma refinement.
-- Higher overlap can preserve boundary context, but it also creates duplicate text that Gemma may need to remove or reconcile.
-
-### `MAX_DOCUMENT_BYTES`
-
-Default:
+### Recursive Chunking
 
 ```text
-52428800
+RAG_CHUNK_SIZE=360
+RAG_CHUNK_OVERLAP=0
+```
+
+`AGENTIC_CHUNK_TARGET_CHARS` defaults to `RAG_CHUNK_SIZE` unless explicitly set.
+
+### Retrieval
+
+```text
+RAG_RETRIEVAL_TIMEOUT_SECONDS=30
+RAG_TOP_K=8
+MAX_CONTEXT_TOKENS=6000
+RERANKER_ENABLED=0
+RERANKER_MODEL=bge-reranker-base
+RERANKER_DEVICE=cpu
+```
+
+### Uploads
+
+```text
+MAX_DOCUMENT_BYTES=52428800
 ```
 
 That is 50 MB.
 
-Purpose:
-Maximum allowed upload size.
-
-Why this default:
-Company policy PDFs and DOCX files can be large, but this prevents accidentally uploading extremely large files that make ingestion slow or unstable.
-
-Impact of changing:
-- Higher values allow larger documents but increase memory, parsing, and embedding load.
-- Lower values protect the VM from heavy uploads but may reject legitimate policy bundles.
-
-### `VECTOR_STORE_NAME`
-
-Default:
-
-```text
-.vector_store
-```
-
-Purpose:
-Directory name under `knowledge_base/` where FAISS and chunk metadata are stored.
-
-Why this default:
-The leading dot keeps vector internals visually separate from user-created folders.
-
-Impact of changing:
-Changing this path makes the app look for a different vector store. Existing indexed documents will not be found unless moved or rebuilt.
-
-## Why FAISS `IndexFlatIP`
-
-The current index type is:
-
-```python
-faiss.IndexFlatIP
-```
-
-Vectors are normalized before insertion, so inner product approximates cosine similarity.
-
-Why this choice:
-
-- Simple and reliable.
-- Good for a first local RAG implementation.
-- No training step.
-- Exact search rather than approximate search.
-- Easy to append new documents incrementally.
-
-Impact:
-
-- Retrieval quality is straightforward and predictable.
-- Search can become slower as the corpus gets very large because it is exact search.
-- For very large knowledge bases, consider approximate FAISS indexes such as IVF or HNSW.
-
-## Current Limitation
-
-The pipeline currently ingests and stores vectors, and the UI can inspect chunks per document.
-
-It does not yet inject retrieved chunks into chat prompts. To complete full RAG answering, the next step would be:
-
-1. Embed the user query.
-2. Search `faiss.index`.
-3. Read matching chunk text from `chunks.json`.
-4. Add the top chunks into `build_context_prompt()` before calling the chat model.
-
-## Security Notes
-
-- `knowledge_base/` is git-ignored.
-- All parsing, embedding, and vector storage are local if Ollama runs locally.
-- Do not point `OLLAMA_EMBED_URL` at a remote server unless that server is approved to receive confidential company data.
-- Do not point `OLLAMA_AGENTIC_CHUNK_URL` at a remote server unless that server is approved to receive confidential company data.
-- `chunks.json` stores raw text chunks, not just vectors. Treat it as sensitive.
-- `faiss.index` may encode sensitive information indirectly. Treat it as sensitive too.
-
 ## VM Setup
+
+Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
 Install dependencies:
 
 ```bash
-source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Pull the chat/chunking model and the embedding model:
+Pull the local models:
 
 ```bash
 ollama pull ministral-3:latest
 ollama pull nomic-embed-text
 ```
 
-Example run command:
+Run the app:
 
 ```bash
-OLLAMA_URL=http://localhost:11434/api/generate 
-OLLAMA_MODEL='ministral-3:latest' 
-LLM_TIMEOUT_SECONDS=300 
-OLLAMA_EMBED_MODEL=nomic-embed-text 
-AGENTIC_CHUNK_MODEL=ministral-3:latest 
-RAG_RETRIEVAL_TIMEOUT_SECONDS=30
-RAG_TOP_K=8
+OLLAMA_URL=http://localhost:11434/api/generate \
+OLLAMA_MODEL='ministral-3:latest' \
+LLM_TIMEOUT_SECONDS=300 \
+OLLAMA_AGENTIC_CHUNK_URL=http://localhost:11434/api/generate \
+AGENTIC_CHUNK_MODEL='ministral-3:latest' \
+OLLAMA_EMBED_URL=http://localhost:11434/api/embeddings \
+OLLAMA_EMBED_MODEL='nomic-embed-text' \
+RAG_RETRIEVAL_TIMEOUT_SECONDS=30 \
+RAG_TOP_K=8 \
+RERANKER_ENABLED=0 \
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-`FlagEmbedding` reranking is disabled by default because loading a reranker inside a chat request can make the frontend appear stuck on small VMs. Enable it only when the reranker model is already installed and the VM has enough CPU/RAM:
+Open:
+
+```text
+http://<VM_IP_ADDRESS>:8000
+```
+
+## Reindexing
+
+Reindex when:
+
+- The embedding model changes.
+- The chunking strategy changes.
+- `faiss.index`, `chunks.json`, or `bm25.pkl` is missing/corrupt.
+- Documents were manually copied into `knowledge_base/`.
+
+Use `rag_reindex.py` as the rebuild helper. It reparses documents, rechunks text, regenerates embeddings, and rebuilds the vector/keyword indexes.
+
+## Troubleshooting
+
+### Frontend Stays Loading
+
+Likely causes:
+
+- Ollama generation is slow on the VM.
+- Query embedding is slow or Ollama embedding endpoint is unavailable.
+- Reranker was enabled and is loading/running slowly.
+- The chat model context is too large.
+
+Useful settings:
 
 ```bash
-RERANKER_ENABLED=1 RERANKER_MODEL=BAAI/bge-reranker-base
+RAG_RETRIEVAL_TIMEOUT_SECONDS=30
+RAG_TOP_K=8
+RERANKER_ENABLED=0
+LLM_TIMEOUT_SECONDS=300
 ```
+
+The backend logs retrieval timing and total prompt timing.
+
+### Upload Succeeds Slowly
+
+Likely causes:
+
+- Large document.
+- Many chunks.
+- Slow agentic chunking model.
+- Slow embedding model.
+
+Useful settings:
+
+```bash
+AGENTIC_CHUNK_WINDOW_SIZE=5
+AGENTIC_CHUNK_TIMEOUT_SECONDS=300
+EMBED_TIMEOUT_SECONDS=120
+```
+
+For faster but less semantic ingestion, reduce model use by relying more on deterministic chunking.
+
+### No Knowledge Context Retrieved
+
+Check:
+
+- `knowledge_base/.vector_store/faiss.index` exists.
+- `knowledge_base/.vector_store/chunks.json` exists.
+- `knowledge_base/.vector_store/bm25.pkl` exists.
+- Ollama embedding endpoint is running.
+- `OLLAMA_EMBED_MODEL` matches the model used to build the index.
+
+### Embedding Dimension Mismatch
+
+This usually means the embedding model changed after vectors were already stored.
+
+Fix:
+
+1. Stop the app.
+2. Rebuild the vector store with one embedding model.
+3. Restart the app with the same `OLLAMA_EMBED_MODEL`.
+
+## Security Notes
+
+- `knowledge_base/` is git-ignored.
+- `chunks.json` stores raw source text. Treat it as sensitive.
+- `faiss.index` can encode sensitive information indirectly. Treat it as sensitive.
+- `bm25.pkl` contains tokenized/indexed source text. Treat it as sensitive.
+- All parsing, embedding, vector storage, and generation stay local only if Ollama URLs point to trusted local infrastructure.
+- Do not point `OLLAMA_EMBED_URL` or `OLLAMA_AGENTIC_CHUNK_URL` at remote servers unless those servers are approved to receive confidential documents.
+
+## Dependency List
+
+Runtime dependencies are listed in `requirements.txt`:
+
+```text
+faiss-cpu
+fastapi
+httpx
+numpy
+pypdf
+python-multipart
+python-docx
+rank-bm25
+FlagEmbedding
+tiktoken
+uvicorn
+```
+
+`FlagEmbedding` is installed but inactive unless `RERANKER_ENABLED=1`.
