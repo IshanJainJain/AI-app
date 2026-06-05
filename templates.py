@@ -2,12 +2,21 @@ from html import escape
 import json
 
 
-def render_page(threads, messages, active_thread_id: int, global_context: str, model: str) -> str:
+def render_page(
+    threads,
+    messages,
+    active_thread_id: int,
+    global_context: str,
+    image_contexts,
+    model: str,
+    vision_model: str,
+) -> str:
     initial_state = json.dumps({
         "threads": threads,
         "messages": messages,
         "activeThreadId": active_thread_id,
         "globalContext": global_context,
+        "imageContexts": image_contexts,
     })
 
     return f"""<!doctype html>
@@ -80,6 +89,10 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             margin-top: 4px;
         }}
 
+        .model span {{
+            display: block;
+        }}
+
         button {{
             border: 0;
             border-radius: 8px;
@@ -101,6 +114,16 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             opacity: 0.72;
         }}
 
+        .danger-button {{
+            background: #fef3f2;
+            border: 1px solid #fecdca;
+            color: var(--danger);
+        }}
+
+        .danger-button:hover {{
+            background: #fee4e2;
+        }}
+
         .icon-button {{
             width: 40px;
             padding: 0;
@@ -116,7 +139,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             padding-right: 2px;
         }}
 
-        .global-context {{
+        .global-context,
+        .image-context {{
             display: grid;
             gap: 8px;
             border: 1px solid var(--line);
@@ -125,7 +149,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             padding: 12px;
         }}
 
-        .global-context summary {{
+        .global-context summary,
+        .image-context summary {{
             cursor: pointer;
             color: var(--text);
             font-size: 14px;
@@ -133,47 +158,135 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             list-style-position: inside;
         }}
 
-        .global-context-content {{
+        .global-context-content,
+        .image-context-content {{
             display: grid;
             gap: 8px;
             margin-top: 10px;
         }}
 
-        .global-context textarea {{
+        .global-context textarea,
+        .image-context textarea {{
             min-height: 110px;
             max-height: 180px;
             padding: 10px;
             font-size: 14px;
         }}
 
-        .global-context .actions {{
+        .global-context .actions,
+        .image-context .actions {{
             margin-top: 0;
         }}
 
-        .global-context button {{
+        .global-context button,
+        .image-context button {{
             min-height: 36px;
         }}
 
-        .thread-button {{
+        input[type="file"] {{
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #fff;
+            padding: 8px;
+            font: inherit;
+            font-size: 13px;
+        }}
+
+        .image-context-list {{
             display: grid;
-            gap: 5px;
+            gap: 8px;
+            max-height: 180px;
+            overflow-y: auto;
+        }}
+
+        .image-context-item {{
+            display: grid;
+            gap: 6px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 8px;
+            background: #fbfcfa;
+        }}
+
+        .image-context-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }}
+
+        .image-context-name {{
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+            font-weight: 800;
+        }}
+
+        .image-context-delete {{
+            min-height: 28px;
+            width: 28px;
+            padding: 0;
+            flex: 0 0 auto;
+        }}
+
+        .image-context-description {{
+            margin: 0;
+            max-height: 88px;
+            overflow-y: auto;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+        }}
+
+        .thread-item {{
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 6px;
             width: 100%;
             min-height: 62px;
             border: 1px solid var(--line);
             border-radius: 8px;
             background: var(--panel);
-            color: var(--text);
             padding: 10px;
-            text-align: left;
+            align-items: center;
         }}
 
-        .thread-button:hover {{
+        .thread-item:hover {{
             background: var(--panel-alt);
         }}
 
-        .thread-button.active {{
+        .thread-item.active {{
             border-color: var(--accent);
             background: #e7f5f2;
+        }}
+
+        .thread-open {{
+            display: grid;
+            gap: 5px;
+            min-width: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            color: var(--text);
+            min-height: 0;
+            padding: 0;
+            text-align: left;
+            font-weight: 400;
+        }}
+
+        .thread-open:hover {{
+            background: transparent;
+        }}
+
+        .thread-delete {{
+            width: 34px;
+            min-height: 34px;
+            padding: 0;
+            align-self: center;
         }}
 
         .thread-title {{
@@ -382,7 +495,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 width: 34px;
             }}
 
-            .global-context textarea {{
+            .global-context textarea,
+            .image-context textarea {{
                 min-height: 68px;
                 max-height: 96px;
             }}
@@ -392,7 +506,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 min-height: 90px;
             }}
 
-            .thread-button {{
+            .thread-item {{
                 min-height: 50px;
                 padding: 8px;
             }}
@@ -451,7 +565,10 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             <div class="brand">
                 <div>
                     <h1>Local AI App</h1>
-                    <div class="model">Model: {escape(model)}</div>
+                    <div class="model">
+                        <span>Chat: {escape(model)}</span>
+                        <span>Vision: {escape(vision_model)}</span>
+                    </div>
                 </div>
                 <button class="icon-button" id="new-thread" type="button" title="New conversation">+</button>
             </div>
@@ -462,8 +579,23 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                     <textarea id="global-context" placeholder="Shared instructions, facts, preferences, or background for every conversation..."></textarea>
                     <div class="actions">
                         <button id="save-global-context" type="button">Save context</button>
+                        <button class="danger-button" id="clear-global-context" type="button">Clear</button>
                         <span class="status" id="global-context-status"></span>
                     </div>
+                </div>
+            </details>
+            <details class="image-context">
+                <summary>Image context</summary>
+                <div class="image-context-content">
+                    <label for="image-upload">Upload image for this conversation</label>
+                    <input id="image-upload" type="file" accept="image/*">
+                    <label for="image-prompt">Extraction prompt</label>
+                    <textarea id="image-prompt" placeholder="Extract readable text and describe useful details for this conversation."></textarea>
+                    <div class="actions">
+                        <button id="upload-image-context" type="button">Add image context</button>
+                        <span class="status" id="image-context-status"></span>
+                    </div>
+                    <div class="image-context-list" id="image-context-list"></div>
                 </div>
             </details>
             <nav class="thread-list" id="thread-list" aria-label="Conversations"></nav>
@@ -506,7 +638,13 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
         const newThreadButton = document.querySelector("#new-thread");
         const globalContextBox = document.querySelector("#global-context");
         const saveGlobalContextButton = document.querySelector("#save-global-context");
+        const clearGlobalContextButton = document.querySelector("#clear-global-context");
         const globalContextStatus = document.querySelector("#global-context-status");
+        const imageUploadInput = document.querySelector("#image-upload");
+        const imagePromptBox = document.querySelector("#image-prompt");
+        const uploadImageContextButton = document.querySelector("#upload-image-context");
+        const imageContextStatus = document.querySelector("#image-context-status");
+        const imageContextList = document.querySelector("#image-context-list");
 
         function escapeHtml(value) {{
             return String(value || "").replace(/[&<>"']/g, (char) => ({{
@@ -532,20 +670,78 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             globalContextStatus.classList.toggle("error", isError);
         }}
 
-        function renderThreads() {{
-            threadList.innerHTML = state.threads.map((thread) => `
-                <button
-                    class="thread-button ${{thread.id === state.activeThreadId ? "active" : ""}}"
-                    type="button"
-                    data-thread-id="${{thread.id}}"
-                >
-                    <span class="thread-title">${{escapeHtml(thread.title)}}</span>
-                    <span class="thread-meta">${{thread.message_count || 0}} messages</span>
-                </button>
+        function setImageContextStatus(message, isError = false) {{
+            imageContextStatus.textContent = message;
+            imageContextStatus.classList.toggle("error", isError);
+        }}
+
+        function readFileAsDataUrl(file) {{
+            return new Promise((resolve, reject) => {{
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(new Error("Could not read image file."));
+                reader.readAsDataURL(file);
+            }});
+        }}
+
+        function renderImageContexts() {{
+            const contexts = state.imageContexts || [];
+            if (!contexts.length) {{
+                imageContextList.innerHTML = `
+                    <p class="image-context-description">No image context saved for this conversation yet.</p>
+                `;
+                return;
+            }}
+
+            imageContextList.innerHTML = contexts.map((item) => `
+                <article class="image-context-item">
+                    <div class="image-context-head">
+                        <span class="image-context-name">${{escapeHtml(item.filename)}}</span>
+                        <button
+                            class="danger-button image-context-delete"
+                            type="button"
+                            data-image-context-id="${{item.id}}"
+                            title="Delete image context"
+                        >
+                            X
+                        </button>
+                    </div>
+                    <p class="image-context-description">${{escapeHtml(item.description)}}</p>
+                </article>
             `).join("");
 
-            threadList.querySelectorAll(".thread-button").forEach((button) => {{
+            imageContextList.querySelectorAll(".image-context-delete").forEach((button) => {{
+                button.addEventListener("click", () => deleteImageContext(Number(button.dataset.imageContextId)));
+            }});
+        }}
+
+        function renderThreads() {{
+            threadList.innerHTML = state.threads.map((thread) => `
+                <article class="thread-item ${{thread.id === state.activeThreadId ? "active" : ""}}">
+                    <button
+                        class="thread-open"
+                        type="button"
+                        data-thread-id="${{thread.id}}"
+                    >
+                        <span class="thread-title">${{escapeHtml(thread.title)}}</span>
+                        <span class="thread-meta">${{thread.message_count || 0}} messages</span>
+                    </button>
+                    <button
+                        class="danger-button thread-delete"
+                        type="button"
+                        data-thread-id="${{thread.id}}"
+                        title="Delete conversation"
+                    >
+                        X
+                    </button>
+                </article>
+            `).join("");
+
+            threadList.querySelectorAll(".thread-open").forEach((button) => {{
                 button.addEventListener("click", () => loadThread(Number(button.dataset.threadId)));
+            }});
+            threadList.querySelectorAll(".thread-delete").forEach((button) => {{
+                button.addEventListener("click", () => deleteThread(Number(button.dataset.threadId)));
             }});
         }}
 
@@ -578,6 +774,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
         function render() {{
             globalContextBox.value = state.globalContext || "";
+            renderImageContexts();
             renderThreads();
             renderMessages();
         }}
@@ -587,6 +784,7 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
             state.messages = data.messages;
             state.activeThreadId = data.thread.id;
             state.globalContext = data.globalContext ?? state.globalContext ?? "";
+            state.imageContexts = data.imageContexts ?? state.imageContexts ?? [];
             localStorage.setItem(storageKey, String(state.activeThreadId));
             render();
         }}
@@ -611,6 +809,87 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 setGlobalContextStatus(error.message, true);
             }} finally {{
                 saveGlobalContextButton.disabled = false;
+            }}
+        }}
+
+        async function clearGlobalContext() {{
+            if (!confirm("Delete the global context from the database?")) {{
+                return;
+            }}
+
+            clearGlobalContextButton.disabled = true;
+            setGlobalContextStatus("Clearing...");
+            try {{
+                const response = await fetch("/api/global-context", {{ method: "DELETE" }});
+                if (!response.ok) {{
+                    throw new Error("Could not clear global context.");
+                }}
+                const data = await response.json();
+                state.globalContext = data.context;
+                globalContextBox.value = "";
+                setGlobalContextStatus("Cleared.");
+            }} catch (error) {{
+                setGlobalContextStatus(error.message, true);
+            }} finally {{
+                clearGlobalContextButton.disabled = false;
+            }}
+        }}
+
+        async function uploadImageContext() {{
+            const file = imageUploadInput.files[0];
+            if (!file) {{
+                setImageContextStatus("Choose an image first.", true);
+                return;
+            }}
+
+            uploadImageContextButton.disabled = true;
+            setImageContextStatus("Reading image...");
+            try {{
+                const image = await readFileAsDataUrl(file);
+                setImageContextStatus("Running vision model...");
+                const response = await fetch(`/api/threads/${{state.activeThreadId}}/image-contexts`, {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{
+                        filename: file.name,
+                        image,
+                        prompt: imagePromptBox.value.trim() || null
+                    }})
+                }});
+                if (!response.ok) {{
+                    const error = await response.json().catch(() => null);
+                    throw new Error(error?.detail || "Could not create image context.");
+                }}
+                const data = await response.json();
+                state.imageContexts = data.imageContexts;
+                imageUploadInput.value = "";
+                imagePromptBox.value = "";
+                renderImageContexts();
+                setImageContextStatus("Saved.");
+            }} catch (error) {{
+                setImageContextStatus(error.message, true);
+            }} finally {{
+                uploadImageContextButton.disabled = false;
+            }}
+        }}
+
+        async function deleteImageContext(imageContextId) {{
+            if (!confirm("Delete this image context from this conversation?")) {{
+                return;
+            }}
+
+            setImageContextStatus("Deleting...");
+            try {{
+                const response = await fetch(`/api/threads/${{state.activeThreadId}}/image-contexts/${{imageContextId}}`, {{ method: "DELETE" }});
+                if (!response.ok) {{
+                    throw new Error("Could not delete image context.");
+                }}
+                const data = await response.json();
+                state.imageContexts = data.imageContexts;
+                renderImageContexts();
+                setImageContextStatus("Deleted.");
+            }} catch (error) {{
+                setImageContextStatus(error.message, true);
             }}
         }}
 
@@ -655,6 +934,26 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
                 setStatus(error.message, true);
             }} finally {{
                 newThreadButton.disabled = false;
+            }}
+        }}
+
+        async function deleteThread(threadId) {{
+            const thread = state.threads.find((item) => item.id === threadId);
+            const title = thread ? thread.title : "this conversation";
+            if (!confirm(`Delete "${{title}}" and all of its messages from the database?`)) {{
+                return;
+            }}
+
+            setStatus("Deleting...");
+            try {{
+                const response = await fetch(`/api/threads/${{threadId}}`, {{ method: "DELETE" }});
+                if (!response.ok) {{
+                    throw new Error("Could not delete conversation.");
+                }}
+                updateFromPayload(await response.json());
+                setStatus("Deleted.");
+            }} catch (error) {{
+                setStatus(error.message, true);
             }}
         }}
 
@@ -714,6 +1013,8 @@ def render_page(threads, messages, active_thread_id: int, global_context: str, m
 
         newThreadButton.addEventListener("click", createThread);
         saveGlobalContextButton.addEventListener("click", saveGlobalContext);
+        clearGlobalContextButton.addEventListener("click", clearGlobalContext);
+        uploadImageContextButton.addEventListener("click", uploadImageContext);
         renameForm.addEventListener("submit", renameThread);
         sendButton.addEventListener("click", sendPrompt);
         promptBox.addEventListener("keydown", (event) => {{
