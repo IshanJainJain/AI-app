@@ -11,8 +11,15 @@ from rag_store import (
 
 
 async def hybrid_retrieval(query: str, k: int, knowledge_base_dir: Path) -> list[dict]:
-    faiss_results = await faiss_search(query, 20, knowledge_base_dir)
-    bm25_results = bm25_search(query, 20, knowledge_base_dir)
+    try:
+        faiss_results = await faiss_search(query, 20, knowledge_base_dir)
+    except Exception:
+        faiss_results = []
+
+    try:
+        bm25_results = bm25_search(query, 20, knowledge_base_dir)
+    except Exception:
+        bm25_results = []
 
     candidates = []
     seen = set()
@@ -28,6 +35,9 @@ async def hybrid_retrieval(query: str, k: int, knowledge_base_dir: Path) -> list
 
 async def retrieve_context(query: str, knowledge_base_dir: Path, max_tokens: int = 6000) -> str:
     candidates = await hybrid_retrieval(query, 20, knowledge_base_dir)
+    if not candidates:
+        return ""
+
     reranked = rerank_chunks(query, candidates, top_n=len(candidates))
     selected = select_context(reranked, max_tokens)
     return build_context(selected)

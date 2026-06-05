@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 from rag_chunking import split_text
+from rag_config import SUPPORTED_DOCUMENT_EXTENSIONS
 from rag_embedding import embed_chunks
 from rag_parsing import parse_document
 from rag_store import store_vectors
@@ -17,6 +18,8 @@ async def rebuild_knowledge_base_indexes(knowledge_base_dir: Path):
         if not path.is_file():
             continue
         if ".vector_store" in path.parts:
+            continue
+        if path.suffix.lower() not in SUPPORTED_DOCUMENT_EXTENSIONS:
             continue
         documents.append(path)
 
