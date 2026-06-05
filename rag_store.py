@@ -194,6 +194,11 @@ def chunk_identity(result: dict) -> tuple:
 
 
 def get_reranker():
+    from rag_config import RERANKER_ENABLED
+
+    if not RERANKER_ENABLED:
+        raise RuntimeError("Reranker is disabled. Set RERANKER_ENABLED=1 to enable it.")
+
     failure = getattr(get_reranker, "_failed", None)
     if failure is not None:
         raise RuntimeError(f"Reranker is unavailable: {failure}")

@@ -252,6 +252,7 @@ async def ask_llm_Ishan(thread_id: int, user_id: int, messages, prompt: str) -> 
         return f"Failed to contact LLM backend: {exc}"
 
     data = response.json()
+    logger.info("Prompt completed in %.2fs.", time.monotonic() - started_at)
     return data.get("response", "").strip() or "The model returned an empty response."
 
 

@@ -507,5 +507,13 @@ OLLAMA_MODEL='ministral-3:latest'
 LLM_TIMEOUT_SECONDS=300 
 OLLAMA_EMBED_MODEL=nomic-embed-text 
 AGENTIC_CHUNK_MODEL=ministral-3:latest 
+RAG_RETRIEVAL_TIMEOUT_SECONDS=30
+RAG_TOP_K=8
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+`FlagEmbedding` reranking is disabled by default because loading a reranker inside a chat request can make the frontend appear stuck on small VMs. Enable it only when the reranker model is already installed and the VM has enough CPU/RAM:
+
+```bash
+RERANKER_ENABLED=1 RERANKER_MODEL=BAAI/bge-reranker-base
 ```
