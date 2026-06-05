@@ -1,0 +1,144 @@
+/* frontend/src/components/Sidebar.module.css */
+.sidebar {
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-right: 1px solid #d9dfda;
+  background: #ffffff;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.top p {
+  margin: 4px 0 16px;
+  color: #657169;
+  font-size: 13px;
+}
+
+.primaryButton,
+.actions button,
+.panelBody > button {
+  border: 0;
+  border-radius: 8px;
+  background: #0f766e;
+  color: white;
+  font-weight: 700;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.primaryButton {
+  width: 100%;
+}
+
+.threadList {
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.threadItem {
+  width: 100%;
+  border: 1px solid #d9dfda;
+  border-radius: 8px;
+  background: #f5f6f2;
+  color: #17211d;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  cursor: pointer;
+}
+
+.threadItem strong,
+.threadItem small {
+  display: block;
+}
+
+.threadItem small {
+  margin-top: 4px;
+  color: #657169;
+}
+
+.active {
+  border-color: #0f766e;
+  background: #eef4f1;
+}
+
+.delete {
+  color: #b42318;
+  font-size: 12px;
+}
+
+.panel {
+  border: 1px solid #d9dfda;
+  border-radius: 8px;
+  background: #f5f6f2;
+  overflow: hidden;
+}
+
+.panelHeader {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #17211d;
+  font-weight: 800;
+  text-align: left;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.panelBody {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.panelBody textarea {
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid #d9dfda;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.contextList {
+  display: grid;
+  gap: 8px;
+}
+
+.contextItem {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.contextItem button,
+.logout {
+  border: 0;
+  background: transparent;
+  color: #b42318;
+  cursor: pointer;
+}
+
+.logout {
+  margin-top: auto;
+  padding: 10px;
+  text-align: left;
+}

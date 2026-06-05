@@ -1,8 +1,14 @@
 faiss-cpu
 fastapi
+uvicorn[standard]
 httpx
 numpy
 pypdf
 python-multipart
 python-docx
 uvicorn
+pydantic[email]
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+python-dotenv
