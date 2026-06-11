@@ -104,7 +104,7 @@ def format_thread_context(messages, latest_prompt: str | None = None) -> str:
 
 async def ask_llm(messages, prompt: str) -> dict:
     started_at = time.monotonic()
-    async with ollama_gate.user_slot():
+    async with ollama_gate.user_session():
         try:
             retrieval_context = await asyncio.wait_for(
                 retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS),
@@ -222,7 +222,11 @@ async def handle_prompt(thread_id: int, request: PromptRequest):
 
     prompt = request.prompt.strip()
     previous_messages = get_messages(thread_id)
-    ai_result = await ask_llm(previous_messages, prompt)
+    try:
+        ai_result = await ask_llm(previous_messages, prompt)
+    except Exception as exc:
+        logger.exception("Prompt handling failed for thread %s.", thread_id)
+        raise HTTPException(status_code=500, detail=f"Could not generate a response: {exc}") from exc
 
     add_message(thread_id, "user", prompt)
     add_message(

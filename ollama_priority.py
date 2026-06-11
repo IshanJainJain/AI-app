@@ -27,17 +27,8 @@ class OllamaPriorityGate:
             if self._active_user_requests == 0:
                 self._background_allowed.set()
 
-    class user_slot:
-        def __init__(self, gate: "OllamaPriorityGate"):
-            self._gate = gate
-
-        async def __aenter__(self):
-            await self._gate.begin_user_request()
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            await self._gate.end_user_request()
-            return False
+    def user_session(self) -> "_UserSession":
+        return _UserSession(self)
 
     async def wait_for_background_turn(self):
         """Pause background Ollama work while user queries are in flight."""
@@ -47,6 +38,19 @@ class OllamaPriorityGate:
                 if self._active_user_requests == 0:
                     return
             await asyncio.sleep(self._background_poll_seconds)
+
+
+class _UserSession:
+    def __init__(self, gate: OllamaPriorityGate):
+        self._gate = gate
+
+    async def __aenter__(self):
+        await self._gate.begin_user_request()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._gate.end_user_request()
+        return False
 
 
 ollama_gate = OllamaPriorityGate()
