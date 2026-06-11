@@ -2,13 +2,16 @@ import os
 
 import httpx
 
+from ollama_priority import ollama_gate
 from rag_config import EMBED_TIMEOUT_SECONDS, OLLAMA_EMBED_MODEL, OLLAMA_EMBED_URL
 
 
-async def embed_chunks(chunks: list[str]) -> list[list[float]]:
+async def embed_chunks(chunks: list[str], *, background: bool = False) -> list[list[float]]:
     vectors = []
     async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_SECONDS) as client:
         for chunk in chunks:
+            if background:
+                await ollama_gate.wait_for_background_turn()
             response = await client.post(
                 OLLAMA_EMBED_URL,
                 json={"model": OLLAMA_EMBED_MODEL, "prompt": chunk},

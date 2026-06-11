@@ -202,6 +202,7 @@ async def api_upload_knowledge_file(parent: str = Form(""), file: UploadFile = F
         job.job_id,
         phase="queued",
         progress=0.0,
+        chunking_progress=0.0,
         message="File saved. Starting indexing...",
     )
     asyncio.create_task(run_ingestion_job(job.job_id, target, content))

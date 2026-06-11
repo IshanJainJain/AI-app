@@ -23,6 +23,7 @@ from DATABASE import (
     title_from_prompt,
 )
 from knowledge_base_api import init_knowledge_base, router as knowledge_base_router
+from ollama_priority import ollama_gate
 from rag_config import MAX_CONTEXT_TOKENS, RAG_RETRIEVAL_TIMEOUT_SECONDS
 from rag_retrieval import retrieve_context
 from templates import render_page
@@ -103,54 +104,55 @@ def format_thread_context(messages, latest_prompt: str | None = None) -> str:
 
 async def ask_llm(messages, prompt: str) -> dict:
     started_at = time.monotonic()
-    try:
-        retrieval_context = await asyncio.wait_for(
-            retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS),
-            timeout=RAG_RETRIEVAL_TIMEOUT_SECONDS,
-        )
-        logger.info(
-            "Retrieved knowledge context in %.2fs (%s chars).",
-            time.monotonic() - started_at,
-            len(retrieval_context),
-        )
-    except asyncio.TimeoutError:
-        logger.warning("Knowledge retrieval timed out after %.2fs.", RAG_RETRIEVAL_TIMEOUT_SECONDS)
-        retrieval_context = ""
-    except Exception as exc:
-        logger.warning("Knowledge retrieval failed: %s", exc)
-        retrieval_context = ""
+    async with ollama_gate.user_slot():
+        try:
+            retrieval_context = await asyncio.wait_for(
+                retrieve_context(prompt, KNOWLEDGE_BASE_DIR, MAX_CONTEXT_TOKENS),
+                timeout=RAG_RETRIEVAL_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "Retrieved knowledge context in %.2fs (%s chars).",
+                time.monotonic() - started_at,
+                len(retrieval_context),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Knowledge retrieval timed out after %.2fs.", RAG_RETRIEVAL_TIMEOUT_SECONDS)
+            retrieval_context = ""
+        except Exception as exc:
+            logger.warning("Knowledge retrieval failed: %s", exc)
+            retrieval_context = ""
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": build_context_prompt(
-            get_global_context(),
-            messages,
-            retrieval_context,
-            prompt,
-        ),
-        "stream": False,
-    }
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": build_context_prompt(
+                get_global_context(),
+                messages,
+                retrieval_context,
+                prompt,
+            ),
+            "stream": False,
+        }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(OLLAMA_URL, json=payload, timeout=LLM_TIMEOUT_SECONDS)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.warning("LLM request failed after %.2fs: %s", time.monotonic() - started_at, exc)
-        answer = f"Failed to contact LLM backend: {exc}"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(OLLAMA_URL, json=payload, timeout=LLM_TIMEOUT_SECONDS)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("LLM request failed after %.2fs: %s", time.monotonic() - started_at, exc)
+            answer = f"Failed to contact LLM backend: {exc}"
+            return {
+                "answer": answer,
+                "thread_context": format_thread_context(messages, prompt),
+                "rag_context": retrieval_context,
+            }
+
+        data = response.json()
+        logger.info("Prompt completed in %.2fs.", time.monotonic() - started_at)
         return {
-            "answer": answer,
+            "answer": data.get("response", "").strip() or "The model returned an empty response.",
             "thread_context": format_thread_context(messages, prompt),
             "rag_context": retrieval_context,
         }
-
-    data = response.json()
-    logger.info("Prompt completed in %.2fs.", time.monotonic() - started_at)
-    return {
-        "answer": data.get("response", "").strip() or "The model returned an empty response.",
-        "thread_context": format_thread_context(messages, prompt),
-        "rag_context": retrieval_context,
-    }
 
 
 def thread_payload(thread_id: int):

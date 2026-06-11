@@ -9,6 +9,7 @@ class IngestionJob:
     source: str
     phase: str = "queued"
     progress: float = 0.0
+    chunking_progress: float = 0.0
     message: str = "Queued for indexing"
     chunks_total: int = 0
     chunks_done: int = 0
@@ -47,6 +48,7 @@ class IngestionJobManager:
             job_id,
             phase="complete",
             progress=100.0,
+            chunking_progress=100.0,
             message="Document indexed and ready for Q&A",
             result=result,
             error=None,
@@ -82,6 +84,7 @@ class IngestionJobManager:
             "source": job.source,
             "phase": job.phase,
             "progress": round(job.progress, 1),
+            "chunking_progress": round(job.chunking_progress, 1),
             "message": job.message,
             "chunks_total": job.chunks_total,
             "chunks_done": job.chunks_done,

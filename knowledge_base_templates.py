@@ -77,27 +77,32 @@ KNOWLEDGE_BASE_CSS = """
             font: inherit;
         }
 
-        .kb-progress-wrap {
-            display: none;
-            grid-column: 1 / -1;
-            gap: 8px;
-            border: 1px solid var(--line);
-            border-radius: 8px;
-            background: var(--panel);
-            padding: 12px;
+        .kb-entry-indexing {
+            flex-direction: column;
+            align-items: stretch;
         }
 
-        .kb-progress-wrap.active {
-            display: grid;
-        }
-
-        .kb-progress-label {
+        .kb-entry-top {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            color: var(--text);
-            font-size: 14px;
+            width: 100%;
+        }
+
+        .kb-file-progress {
+            display: grid;
+            gap: 6px;
+            width: 100%;
+        }
+
+        .kb-file-progress-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--muted);
+            font-size: 12px;
             font-weight: 700;
         }
 
@@ -109,7 +114,7 @@ KNOWLEDGE_BASE_CSS = """
         .kb-progress-track {
             overflow: hidden;
             width: 100%;
-            height: 10px;
+            height: 8px;
             border-radius: 999px;
             background: #e8ece9;
         }
@@ -120,23 +125,6 @@ KNOWLEDGE_BASE_CSS = """
             border-radius: inherit;
             background: linear-gradient(90deg, var(--accent), #14b8a6);
             transition: width 0.25s ease;
-        }
-
-        .kb-progress-detail {
-            color: var(--muted);
-            font-size: 13px;
-        }
-
-        .kb-indexing-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            border-radius: 999px;
-            background: rgba(15, 118, 110, 0.12);
-            color: var(--accent-dark);
-            padding: 4px 10px;
-            font-size: 12px;
-            font-weight: 800;
         }
 
         .kb-content {
@@ -321,11 +309,6 @@ KNOWLEDGE_BASE_BINDINGS = """
         const kbFolderName = document.querySelector("#kb-folder-name");
         const kbUploadForm = document.querySelector("#kb-upload-form");
         const kbFile = document.querySelector("#kb-file");
-        const kbProgressWrap = document.querySelector("#kb-progress-wrap");
-        const kbProgressLabel = document.querySelector("#kb-progress-label");
-        const kbProgressPercent = document.querySelector("#kb-progress-percent");
-        const kbProgressBar = document.querySelector("#kb-progress-bar");
-        const kbProgressDetail = document.querySelector("#kb-progress-detail");
 
         state.knowledgeBase = {
             path: "",
@@ -354,14 +337,6 @@ KNOWLEDGE_BASE_SCRIPT = """
             kbStatus.classList.toggle("error", isError);
         }
 
-        function setKnowledgeProgress(visible, label = "", percent = 0, detail = "") {
-            kbProgressWrap.classList.toggle("active", visible);
-            kbProgressLabel.textContent = label;
-            kbProgressPercent.textContent = `${Math.round(percent)}%`;
-            kbProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
-            kbProgressDetail.textContent = detail;
-        }
-
         function mergeActiveIngestions(data) {
             const active = data.active_ingestions || [];
             const fromFiles = (data.files || [])
@@ -376,43 +351,49 @@ KNOWLEDGE_BASE_SCRIPT = """
             return Array.from(merged.values());
         }
 
-        function renderIngestionBadge(ingestion) {
-            if (!ingestion || ingestion.phase === "complete") {
+        function applyIngestionsToFiles() {
+            const jobBySource = new Map(
+                (state.knowledgeBase.activeIngestions || []).map((job) => [job.source, job])
+            );
+            state.knowledgeBase.files = (state.knowledgeBase.files || []).map((file) => {
+                const job = jobBySource.get(file.path);
+                if (!job) {
+                    const { ingestion, ...rest } = file;
+                    return rest;
+                }
+                return { ...file, ingestion: job };
+            });
+        }
+
+        function chunkingDisplayPercent(ingestion) {
+            return Math.max(0, Math.min(100, Math.round(ingestion.chunking_progress || 0)));
+        }
+
+        function renderFileProgress(ingestion) {
+            if (!ingestion || ingestion.phase === "complete" || ingestion.phase === "failed") {
                 return "";
             }
-            const percent = Math.round(ingestion.progress || 0);
-            return `<span class="kb-indexing-badge">Indexing ${percent}%</span>`;
-        }
 
-        function ingestionDisplayPercent(job) {
-            const serverPercent = job.progress || 0;
-            if (job.phase === "complete") {
-                return 100;
-            }
-            if (job.phase === "failed") {
-                return serverPercent;
-            }
-            return 30 + (serverPercent * 0.7);
-        }
-
-        function updateProgressFromJob(job) {
-            if (!job) {
-                return;
-            }
+            const percent = chunkingDisplayPercent(ingestion);
             const phaseLabels = {
-                queued: "Preparing document",
-                parsing: "Parsing document",
-                chunking: "Chunking document",
-                embedding: "Indexing for Q&A",
-                complete: "Indexing complete",
-                failed: "Indexing failed"
+                queued: "Preparing",
+                parsing: "Preparing",
+                chunking: "Chunking",
+                embedding: "Indexing"
             };
-            const label = phaseLabels[job.phase] || "Indexing document";
-            let detail = job.message || "";
-            if (job.chunks_total) {
-                detail = `${job.chunks_done || 0} of ${job.chunks_total} chunks indexed. You can ask questions now on indexed content.`;
-            }
-            setKnowledgeProgress(true, label, ingestionDisplayPercent(job), detail);
+            const label = phaseLabels[ingestion.phase] || "Processing";
+
+            return `
+                <div class="kb-file-progress">
+                    <div class="kb-file-progress-label">
+                        <span>${label}</span>
+                        <span class="kb-progress-percent">${percent}%</span>
+                    </div>
+                    <div class="kb-progress-track">
+                        <div class="kb-progress-bar" style="width: ${percent}%"></div>
+                    </div>
+                </div>
+            `;
         }
 
         function stopIngestionPolling() {
@@ -422,38 +403,26 @@ KNOWLEDGE_BASE_SCRIPT = """
             }
         }
 
-        function startIngestionPolling(jobId) {
-            stopIngestionPolling();
-            if (!jobId) {
+        function ensureIngestionPolling() {
+            if (state.kbIngestionPollTimer) {
                 return;
             }
 
             const poll = async () => {
                 try {
-                    const response = await fetch(`/api/knowledge-base/ingestion/${encodeURIComponent(jobId)}`);
+                    const response = await fetch("/api/knowledge-base/ingestion");
                     if (!response.ok) {
                         return;
                     }
-                    const job = await response.json();
-                    updateProgressFromJob(job);
-                    state.knowledgeBase.activeIngestions = mergeActiveIngestions({
-                        ...state.knowledgeBase,
-                        active_ingestions: [job]
-                    });
+
+                    const payload = await response.json();
+                    const jobs = payload.jobs || [];
+                    state.knowledgeBase.activeIngestions = jobs;
+                    applyIngestionsToFiles();
                     renderKnowledgeBase();
 
-                    if (job.phase === "complete") {
+                    if (!jobs.length) {
                         stopIngestionPolling();
-                        setKnowledgeStatus(`Document indexed (${job.result ? job.result.chunks : 0} chunks). You can keep chatting while more files finish indexing.`);
-                        window.setTimeout(() => setKnowledgeProgress(false), 2500);
-                        await loadKnowledgeBase(state.knowledgeBase.path || "");
-                        return;
-                    }
-                    if (job.phase === "failed") {
-                        stopIngestionPolling();
-                        setKnowledgeStatus(job.error || "Indexing failed.", true);
-                        setKnowledgeProgress(false);
-                        await loadKnowledgeBase(state.knowledgeBase.path || "");
                     }
                 } catch (error) {
                     console.error(error);
@@ -465,6 +434,7 @@ KNOWLEDGE_BASE_SCRIPT = """
         }
 
         function renderKnowledgeBase() {
+            applyIngestionsToFiles();
             const data = state.knowledgeBase;
             kbPath.textContent = data.path ? `/${data.path}` : "/";
             kbUpButton.disabled = !data.path;
@@ -489,19 +459,24 @@ KNOWLEDGE_BASE_SCRIPT = """
                 </div>
             `).join("");
 
-            const files = data.files.map((file) => `
-                <div class="kb-entry">
-                    <button class="kb-entry-main" type="button" data-kb-path="${escapeHtml(file.path)}" data-kb-kind="file">
-                        <span class="kb-entry-icon" aria-hidden="true">T</span>
-                        <span class="kb-entry-name">${escapeHtml(file.name)}</span>
-                    </button>
-                    <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
-                        ${renderIngestionBadge(file.ingestion)}
-                        <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
-                        <button class="kb-delete" type="button" data-kb-delete="${escapeHtml(file.path)}" data-kb-delete-kind="file" title="Delete file">×</button>
+            const files = data.files.map((file) => {
+                const isIndexing = file.ingestion && file.ingestion.phase !== "complete" && file.ingestion.phase !== "failed";
+                return `
+                <div class="kb-entry${isIndexing ? " kb-entry-indexing" : ""}">
+                    <div class="kb-entry-top">
+                        <button class="kb-entry-main" type="button" data-kb-path="${escapeHtml(file.path)}" data-kb-kind="file">
+                            <span class="kb-entry-icon" aria-hidden="true">T</span>
+                            <span class="kb-entry-name">${escapeHtml(file.name)}</span>
+                        </button>
+                        <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto;">
+                            <span class="kb-entry-meta">${formatBytes(file.size || 0)}</span>
+                            <button class="kb-delete" type="button" data-kb-delete="${escapeHtml(file.path)}" data-kb-delete-kind="file" title="Delete file">×</button>
+                        </div>
                     </div>
+                    ${renderFileProgress(file.ingestion)}
                 </div>
-            `).join("");
+            `;
+            }).join("");
 
             if (!parentEntry && !folders && !files) {
                 kbBrowser.innerHTML = `
@@ -616,12 +591,10 @@ KNOWLEDGE_BASE_SCRIPT = """
                 renderKnowledgeBase();
                 setKnowledgeStatus("");
 
-                const activeJob = (state.knowledgeBase.activeIngestions || [])[0];
-                if (activeJob) {
-                    updateProgressFromJob(activeJob);
-                    startIngestionPolling(activeJob.job_id);
+                if ((state.knowledgeBase.activeIngestions || []).length) {
+                    ensureIngestionPolling();
                 } else {
-                    setKnowledgeProgress(false);
+                    stopIngestionPolling();
                 }
             } catch (error) {
                 setKnowledgeStatus(error.message, true);
@@ -660,47 +633,6 @@ KNOWLEDGE_BASE_SCRIPT = """
             }
         }
 
-        function uploadKnowledgeFileWithProgress(formData, file) {
-            return new Promise((resolve, reject) => {
-                const request = new XMLHttpRequest();
-                request.open("POST", "/api/knowledge-base/files");
-                request.responseType = "json";
-
-                request.upload.addEventListener("progress", (event) => {
-                    if (!event.lengthComputable) {
-                        return;
-                    }
-                    const uploadPercent = (event.loaded / event.total) * 30;
-                    setKnowledgeProgress(
-                        true,
-                        "Uploading file",
-                        uploadPercent,
-                        `${formatBytes(event.loaded)} of ${formatBytes(event.total)} uploaded`
-                    );
-                });
-
-                request.addEventListener("load", () => {
-                    const response = request.response || {};
-                    if (request.status >= 200 && request.status < 300) {
-                        resolve(response);
-                        return;
-                    }
-                    reject(new Error(response.detail || "Could not upload file."));
-                });
-
-                request.addEventListener("error", () => {
-                    reject(new Error("Could not upload file."));
-                });
-
-                request.addEventListener("abort", () => {
-                    reject(new Error("Upload cancelled."));
-                });
-
-                setKnowledgeProgress(true, "Uploading file", 0, `Preparing to upload ${file.name}`);
-                request.send(formData);
-            });
-        }
-
         async function uploadKnowledgeFile(event) {
             event.preventDefault();
             const file = kbFile.files[0];
@@ -718,10 +650,18 @@ KNOWLEDGE_BASE_SCRIPT = """
             formData.append("parent", state.knowledgeBase.path || "");
             formData.append("file", file);
 
-            setKnowledgeStatus("Uploading file...");
-            stopIngestionPolling();
+            setKnowledgeStatus(`Uploading ${file.name}...`);
             try {
-                const payload = await uploadKnowledgeFileWithProgress(formData, file);
+                const response = await fetch("/api/knowledge-base/files", {
+                    method: "POST",
+                    body: formData
+                });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({ detail: "Could not upload file." }));
+                    throw new Error(data.detail || "Could not upload file.");
+                }
+
+                const payload = await response.json();
                 state.knowledgeBase = {
                     ...payload,
                     activeIngestions: mergeActiveIngestions(payload),
@@ -729,21 +669,9 @@ KNOWLEDGE_BASE_SCRIPT = """
                 };
                 kbFile.value = "";
                 renderKnowledgeBase();
-
-                const job = payload.job;
-                if (job) {
-                    updateProgressFromJob({
-                        ...job,
-                        message: "File uploaded. Indexing in the background..."
-                    });
-                    setKnowledgeStatus("File uploaded. Indexing continues in the background — you can keep chatting.");
-                    startIngestionPolling(job.job_id);
-                } else {
-                    setKnowledgeStatus("Document uploaded.");
-                    setKnowledgeProgress(false);
-                }
+                setKnowledgeStatus(`${file.name} uploaded. Each file shows its own chunking progress below.`);
+                ensureIngestionPolling();
             } catch (error) {
-                setKnowledgeProgress(false);
                 setKnowledgeStatus(error.message, true);
             }
         }
@@ -792,17 +720,6 @@ def render_knowledge_panel() -> str:
                                 <button type="submit">Upload</button>
                             </div>
                         </form>
-
-                        <div class="kb-progress-wrap" id="kb-progress-wrap" aria-live="polite">
-                            <div class="kb-progress-label">
-                                <span id="kb-progress-label">Uploading file</span>
-                                <span class="kb-progress-percent" id="kb-progress-percent">0%</span>
-                            </div>
-                            <div class="kb-progress-track">
-                                <div class="kb-progress-bar" id="kb-progress-bar"></div>
-                            </div>
-                            <div class="kb-progress-detail" id="kb-progress-detail"></div>
-                        </div>
                     </section>
 
                     <section class="kb-content">

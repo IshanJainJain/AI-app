@@ -30,5 +30,5 @@ async def rebuild_knowledge_base_indexes(knowledge_base_dir: Path):
         chunks = await split_text(text, knowledge_base_dir, relative_path)
         if not chunks:
             continue
-        vectors = await embed_chunks(chunks)
+        vectors = await embed_chunks(chunks, background=True)
         store_vectors(knowledge_base_dir, relative_path, chunks, vectors, content)

@@ -85,16 +85,22 @@ async def ingest_document_with_progress(
                 **extra,
             })
 
-    await report("parsing", 5.0, "Parsing document...")
+    await report("parsing", 5.0, "Parsing document...", chunking_progress=0.0)
     text = parse_document(document_path.name, content)
     if not text.strip():
         raise ValueError("Document did not contain any extractable text.")
 
     async def chunk_progress(fraction: float):
+        chunking_progress = fraction * 100.0
         progress = 5.0 + (fraction * 35.0)
-        await report("chunking", progress, "Chunking document...")
+        await report(
+            "chunking",
+            progress,
+            "Chunking document...",
+            chunking_progress=chunking_progress,
+        )
 
-    await report("chunking", 10.0, "Chunking document...")
+    await report("chunking", 10.0, "Chunking document...", chunking_progress=0.0)
     chunks = await split_text(
         text,
         knowledge_base_dir,
@@ -111,10 +117,11 @@ async def ingest_document_with_progress(
         f"Indexing 0 of {total_chunks} chunks...",
         chunks_total=total_chunks,
         chunks_done=0,
+        chunking_progress=100.0,
     )
 
     for index, chunk in enumerate(chunks):
-        vector = (await embed_chunks([chunk]))[0]
+        vector = (await embed_chunks([chunk], background=True))[0]
         await append_document_chunks(
             knowledge_base_dir,
             relative_path,
@@ -132,6 +139,7 @@ async def ingest_document_with_progress(
             f"Indexing {chunks_done} of {total_chunks} chunks...",
             chunks_total=total_chunks,
             chunks_done=chunks_done,
+            chunking_progress=100.0,
         )
 
     await rebuild_bm25_index(knowledge_base_dir)
@@ -141,6 +149,7 @@ async def ingest_document_with_progress(
         "Document indexed and ready for Q&A",
         chunks_total=total_chunks,
         chunks_done=total_chunks,
+        chunking_progress=100.0,
     )
 
     return _ingestion_result(relative_path, total_chunks, len(text))

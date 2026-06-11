@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 
+from ollama_priority import ollama_gate
 from rag_config import (
     AGENTIC_CHUNK_INTERACTION_LOG,
     AGENTIC_CHUNK_MAX_CHARS,
@@ -84,6 +85,7 @@ async def agentic_refine_chunk_window(
     error_message = None
     result = None
     try:
+        await ollama_gate.wait_for_background_turn()
         response = await client.post(
             OLLAMA_CHUNK_URL,
             json={
