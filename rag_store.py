@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import pickle
@@ -5,6 +6,8 @@ import re
 from pathlib import Path
 
 from rag_config import BM25_INDEX_NAME, OLLAMA_EMBED_MODEL, VECTOR_STORE_NAME
+
+_vector_store_lock = asyncio.Lock()
 
 
 def chunks_path_for(knowledge_base_dir: Path) -> Path:
@@ -18,12 +21,15 @@ def load_chunks(knowledge_base_dir: Path) -> list[dict]:
     return json.loads(chunks_path.read_text(encoding="utf-8"))
 
 
-def store_vectors(
+def _append_vectors_sync(
     knowledge_base_dir: Path,
     relative_path: str,
     chunks: list[str],
     vectors: list[list[float]],
     content: bytes,
+    *,
+    chunk_offset: int,
+    rebuild_bm25: bool,
 ):
     try:
         import faiss
@@ -52,7 +58,6 @@ def store_vectors(
         index = faiss.IndexFlatIP(matrix.shape[1])
 
     existing_chunks = load_chunks(knowledge_base_dir)
-
     document_hash = hashlib.sha256(content).hexdigest()
     start_index = len(existing_chunks)
     records = []
@@ -62,7 +67,7 @@ def store_vectors(
             "text": chunk,
             "metadata": {
                 "source": relative_path,
-                "chunk": offset,
+                "chunk": chunk_offset + offset,
                 "sha256": document_hash,
                 "embedding_model": OLLAMA_EMBED_MODEL,
             },
@@ -72,7 +77,140 @@ def store_vectors(
     faiss.write_index(index, str(index_path))
     all_chunks = existing_chunks + records
     chunks_path.write_text(json.dumps(all_chunks, ensure_ascii=False, indent=2), encoding="utf-8")
-    save_bm25_index(knowledge_base_dir, build_bm25_index(all_chunks))
+    if rebuild_bm25:
+        save_bm25_index(knowledge_base_dir, build_bm25_index(all_chunks))
+
+
+def store_vectors(
+    knowledge_base_dir: Path,
+    relative_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+    content: bytes,
+    *,
+    rebuild_bm25: bool = True,
+):
+    _append_vectors_sync(
+        knowledge_base_dir,
+        relative_path,
+        chunks,
+        vectors,
+        content,
+        chunk_offset=0,
+        rebuild_bm25=rebuild_bm25,
+    )
+
+
+async def append_document_chunks(
+    knowledge_base_dir: Path,
+    relative_path: str,
+    chunk: str,
+    vector: list[float],
+    content: bytes,
+    *,
+    chunk_offset: int,
+    rebuild_bm25: bool,
+):
+    async with _vector_store_lock:
+        _append_vectors_sync(
+            knowledge_base_dir,
+            relative_path,
+            [chunk],
+            [vector],
+            content,
+            chunk_offset=chunk_offset,
+            rebuild_bm25=rebuild_bm25,
+        )
+
+
+async def rebuild_bm25_index(knowledge_base_dir: Path):
+    async with _vector_store_lock:
+        all_chunks = load_chunks(knowledge_base_dir)
+        if not all_chunks:
+            return
+        save_bm25_index(knowledge_base_dir, build_bm25_index(all_chunks))
+
+
+def _remove_document_chunks_sync(knowledge_base_dir: Path, relative_path: str):
+    try:
+        import faiss
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("Install faiss-cpu and numpy to update document vectors.") from exc
+
+    vector_store_dir = knowledge_base_dir / VECTOR_STORE_NAME
+    index_path = vector_store_dir / "faiss.index"
+    chunks_path = chunks_path_for(knowledge_base_dir)
+    existing_chunks = load_chunks(knowledge_base_dir)
+    kept_chunks = [
+        chunk
+        for chunk in existing_chunks
+        if chunk.get("metadata", {}).get("source") != relative_path
+    ]
+    if len(kept_chunks) == len(existing_chunks):
+        return
+
+    if not kept_chunks:
+        if index_path.exists():
+            index_path.unlink()
+        chunks_path.write_text("[]", encoding="utf-8")
+        bm25_path = vector_store_dir / BM25_INDEX_NAME
+        if bm25_path.exists():
+            bm25_path.unlink()
+        return
+
+    chunks_path.write_text(json.dumps(kept_chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_bm25_index(knowledge_base_dir, build_bm25_index(kept_chunks))
+
+    if not index_path.exists():
+        return
+
+    old_index = faiss.read_index(str(index_path))
+    kept_vectors = []
+    for chunk in kept_chunks:
+        chunk_id = chunk.get("id")
+        if chunk_id is None or chunk_id < 0 or chunk_id >= old_index.ntotal:
+            continue
+        kept_vectors.append(old_index.reconstruct(int(chunk_id)))
+
+    if not kept_vectors:
+        index_path.unlink()
+        return
+
+    matrix = np.array(kept_vectors, dtype="float32")
+    faiss.normalize_L2(matrix)
+    new_index = faiss.IndexFlatIP(matrix.shape[1])
+    new_index.add(matrix)
+    faiss.write_index(new_index, str(index_path))
+
+    for new_id, chunk in enumerate(kept_chunks):
+        chunk["id"] = new_id
+    chunks_path.write_text(json.dumps(kept_chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+async def remove_document_chunks(knowledge_base_dir: Path, relative_path: str):
+    async with _vector_store_lock:
+        _remove_document_chunks_sync(knowledge_base_dir, relative_path)
+
+
+async def locked_store_vectors(
+    knowledge_base_dir: Path,
+    relative_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+    content: bytes,
+    *,
+    rebuild_bm25: bool = True,
+):
+    async with _vector_store_lock:
+        store_vectors(
+            knowledge_base_dir,
+            relative_path,
+            chunks,
+            vectors,
+            content,
+            rebuild_bm25=rebuild_bm25,
+        )
 
 
 def tokenize_for_bm25(text: str) -> list[str]:
@@ -160,28 +298,29 @@ async def faiss_search(query: str, k: int, knowledge_base_dir: Path) -> list[dic
     if not index_path.exists() or not chunks_path.exists():
         return []
 
-    chunks = load_chunks(knowledge_base_dir)
-    if not chunks:
-        return []
-
-    index = faiss.read_index(str(index_path))
     query_vector = np.array([await embed_query(query)], dtype="float32")
     faiss.normalize_L2(query_vector)
 
-    scores, indices = index.search(query_vector, min(k, len(chunks)))
-    results = []
-    for score, index_id in zip(scores[0], indices[0]):
-        if index_id < 0:
-            continue
-        if int(index_id) >= len(chunks):
-            continue
-        chunk = chunks[int(index_id)]
-        results.append({
-            "score": float(score),
-            "text": chunk["text"],
-            "metadata": chunk["metadata"],
-        })
-    return results
+    async with _vector_store_lock:
+        chunks = load_chunks(knowledge_base_dir)
+        if not chunks:
+            return []
+
+        index = faiss.read_index(str(index_path))
+        scores, indices = index.search(query_vector, min(k, len(chunks)))
+        results = []
+        for score, index_id in zip(scores[0], indices[0]):
+            if index_id < 0:
+                continue
+            if int(index_id) >= len(chunks):
+                continue
+            chunk = chunks[int(index_id)]
+            results.append({
+                "score": float(score),
+                "text": chunk["text"],
+                "metadata": chunk["metadata"],
+            })
+        return results
 
 
 def chunk_identity(result: dict) -> tuple:

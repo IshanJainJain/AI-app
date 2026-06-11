@@ -17,7 +17,12 @@ from rag_config import (
 )
 
 
-async def split_text(text: str, knowledge_base_dir: Path, relative_path: str) -> list[str]:
+async def split_text(
+    text: str,
+    knowledge_base_dir: Path,
+    relative_path: str,
+    on_progress=None,
+) -> list[str]:
     normalized = normalize_text(text)
     if not normalized:
         return []
@@ -29,6 +34,7 @@ async def split_text(text: str, knowledge_base_dir: Path, relative_path: str) ->
     interaction_log_path = agentic_chunk_log_path(knowledge_base_dir)
     refined_chunks = []
     carryover = []
+    total_base_chunks = len(base_chunks)
     async with httpx.AsyncClient(timeout=AGENTIC_CHUNK_TIMEOUT_SECONDS) as client:
         start = 0
         first_window = True
@@ -47,13 +53,16 @@ async def split_text(text: str, knowledge_base_dir: Path, relative_path: str) ->
                 carryover = []
                 first_window = False
                 start += window_size
-                continue
-            refined_chunks.extend(result["final_chunks"])
-            carryover = result["carryover"]
-            if len(carryover) > 1:
-                carryover = ["\n\n".join(carryover).strip()]
-            first_window = False
-            start += window_size
+            else:
+                refined_chunks.extend(result["final_chunks"])
+                carryover = result["carryover"]
+                if len(carryover) > 1:
+                    carryover = ["\n\n".join(carryover).strip()]
+                first_window = False
+                start += window_size
+
+            if on_progress is not None:
+                await on_progress(min(1.0, start / total_base_chunks))
 
     refined_chunks.extend(carryover)
     return normalize_agentic_chunks([chunk for chunk in refined_chunks if chunk])
