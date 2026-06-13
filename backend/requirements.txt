@@ -1,0 +1,41 @@
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Data stores
+motor                    # async MongoDB (Motor)
+redis[asyncio]           # async Redis
+
+# LLM (OpenAI-compatible SDK — works with LM Studio, Ollama, OpenAI, etc.)
+openai
+
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt>=3.1.0,<4.0.0    # passlib detect_wrap_bug breaks with bcrypt 4.x
+
+# HTTP client (embeddings, OAuth)
+httpx
+
+# RAG / Vector store
+faiss-cpu
+numpy
+pypdf
+python-docx
+
+# Config + validation
+pydantic[email]
+pydantic-settings
+
+# Background tasks
+celery[redis]
+
+# Utilities
+python-multipart
+python-dotenv
+
+# Observability (optional — only needed when OTEL_ENABLED=true)
+opentelemetry-sdk
+opentelemetry-api
+opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-instrumentation-fastapi

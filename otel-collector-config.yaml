@@ -1,0 +1,91 @@
+# OpenTelemetry Collector configuration
+# Receives OTLP from chatbot-backend → exports traces to Jaeger, metrics to Prometheus, logs to Loki
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Drop high-cardinality health-check spans to reduce noise
+  filter/healthcheck:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["http.route"] == "/health"'
+        - 'attributes["http.target"] == "/health"'
+
+  # Tag all telemetry with deployment environment
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local-docker
+        action: upsert
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+exporters:
+  # Traces → Jaeger via OTLP gRPC
+  otlp/jaeger:
+    endpoint: chatbot-jaeger:4317
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus (scraped by Prometheus server)
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: chatbot
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Logs → Loki
+  loki:
+    endpoint: http://chatbot-loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false
+      job: true
+      instance: true
+      level: true
+
+  # Debug logging (disable in production)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, filter/healthcheck, resource, batch]
+      exporters:  [otlp/jaeger, debug]
+
+    metrics:
+      receivers:  [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters:  [prometheus]
+
+    logs:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [loki, debug]

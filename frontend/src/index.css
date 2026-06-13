@@ -1,7 +1,18 @@
-*, *::before, *::after { box-sizing: border-box; }
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 body {
-  margin: 0;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
-  -webkit-font-smoothing: antialiased;
+  @apply bg-gray-950 text-gray-100 font-sans;
 }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { @apply bg-gray-900; }
+::-webkit-scrollbar-thumb { @apply bg-gray-700 rounded; }
+
+/* Message markdown prose */
+.prose-chat p { @apply mb-2 last:mb-0; }
+.prose-chat code { @apply bg-gray-800 text-indigo-300 px-1 rounded text-sm font-mono; }
+.prose-chat pre { @apply bg-gray-800 rounded p-3 overflow-x-auto text-sm my-2; }
+.prose-chat pre code { @apply bg-transparent p-0 text-gray-200; }

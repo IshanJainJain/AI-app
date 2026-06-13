@@ -1,0 +1,21 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local-docker
+    project: local-ai-chat
+
+scrape_configs:
+  # OTel Collector exposes backend metrics via Prometheus endpoint
+  - job_name: chatbot
+    static_configs:
+      - targets: ["chatbot-otel:8889"]
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: chatbot_.*
+        action: keep
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

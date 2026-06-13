@@ -1,0 +1,276 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Local AI Chat — Docker Compose
+#  Services: backend · celery-worker · celery-beat · frontend
+#            mongodb · redis · otel-collector · jaeger · prometheus · loki · grafana
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-backend-env: &backend-env
+  MONGODB_URL: mongodb://chatbot-mongo:27017
+  MONGODB_DB: chatbot
+  REDIS_URL: redis://chatbot-redis:6379/0
+  CELERY_BROKER_URL: redis://chatbot-redis:6379/1
+  CELERY_RESULT_BACKEND: redis://chatbot-redis:6379/2
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://chatbot-otel:4317
+  OTEL_SERVICE_NAME: chatbot-api
+  OTEL_ENABLED: "true"
+  LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+  LLM_API_KEY: ${LLM_API_KEY:-lm-studio}
+  LLM_MODEL: ${LLM_MODEL:-local-model}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+  LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+  EMBED_BASE_URL: ${EMBED_BASE_URL:-http://host.docker.internal:1234/v1}
+  EMBED_API_KEY: ${EMBED_API_KEY:-lm-studio}
+  EMBED_MODEL: ${EMBED_MODEL:-text-embedding-qwen3-embedding-0.6b}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-prod}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3002}
+  DEBUG: "true"
+
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  chatbot-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-backend
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *backend-env
+    volumes:
+      - ./backend:/app
+      - kb-data:/app/knowledge_base
+    depends_on:
+      chatbot-mongo:
+        condition: service_healthy
+      chatbot-redis:
+        condition: service_healthy
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Celery worker ────────────────────────────────────────────────────────────
+  chatbot-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-worker
+    command: >
+      celery -A app.workers.celery_app.celery_app worker
+      --loglevel=info --queues=ingest,maintenance,dead-letters
+      --concurrency=4
+    environment:
+      <<: *backend-env
+    volumes:
+      - ./backend:/app
+      - kb-data:/app/knowledge_base
+    depends_on:
+      chatbot-mongo:
+        condition: service_healthy
+      chatbot-redis:
+        condition: service_healthy
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── Celery beat (scheduled tasks) ────────────────────────────────────────────
+  chatbot-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-beat
+    command: >
+      celery -A app.workers.celery_app.celery_app beat
+      --loglevel=info
+    environment:
+      <<: *backend-env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - chatbot-redis
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── React frontend (production nginx build) ──────────────────────────────────
+  chatbot-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbot-frontend
+    ports:
+      - "3002:80"
+    depends_on:
+      - chatbot-backend
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  chatbot-mongo:
+    image: mongo:7.0
+    container_name: chatbot-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  chatbot-redis:
+    image: redis:7.4-alpine
+    container_name: chatbot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── OpenTelemetry Collector ──────────────────────────────────────────────────
+  chatbot-otel:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: chatbot-otel
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics endpoint
+    depends_on:
+      - chatbot-jaeger
+      - chatbot-loki
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── Loki (log aggregation) ───────────────────────────────────────────────────
+  chatbot-loki:
+    image: grafana/loki:3.0.0
+    container_name: chatbot-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Jaeger (distributed tracing) ─────────────────────────────────────────────
+  chatbot-jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: chatbot-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # gRPC
+      - "14268:14268"   # HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    volumes:
+      - jaeger-data:/tmp
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  chatbot-prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: chatbot-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── Promtail (container log collector → Loki) ────────────────────────────────
+  chatbot-promtail:
+    image: grafana/promtail:3.0.0
+    container_name: chatbot-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/tmp
+    depends_on:
+      chatbot-loki:
+        condition: service_healthy
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  chatbot-grafana:
+    image: grafana/grafana:11.3.0
+    container_name: chatbot-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - chatbot-prometheus
+      - chatbot-loki
+    networks:
+      - chatbot-net
+    restart: unless-stopped
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  mongo-data:
+  redis-data:
+  kb-data:
+  jaeger-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:
+  promtail-positions:
+
+# ─── Network ─────────────────────────────────────────────────────────────────
+networks:
+  chatbot-net:
+    driver: bridge
