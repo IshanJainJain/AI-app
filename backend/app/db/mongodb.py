@@ -291,6 +291,13 @@ async def get_kb_doc(path: str) -> Optional[dict]:
     return await find_one("knowledge_docs", {"path": path})
 
 
+async def count_degraded_kb_docs() -> int:
+    """Return the number of KB docs stored in FAISS fallback instead of Qdrant."""
+    from app.constants import VECTOR_BACKEND_FAISS_FALLBACK
+    db = get_db()
+    return int(await db.knowledge_docs.count_documents({"vector_backend": VECTOR_BACKEND_FAISS_FALLBACK}))
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def title_from_prompt(prompt: str) -> str:

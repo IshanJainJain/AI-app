@@ -22,6 +22,7 @@ faiss-cpu
 numpy
 pypdf
 python-docx
+qdrant-client
 
 # Config + validation
 pydantic[email]

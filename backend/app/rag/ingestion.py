@@ -6,6 +6,7 @@ embed (Ollama) → FAISS storage.
 
 All config comes from app.config.settings.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -17,6 +18,7 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from app.constants import VECTOR_BACKEND_QDRANT, VECTOR_BACKEND_FAISS, VECTOR_BACKEND_FAISS_FALLBACK
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +268,7 @@ async def embed_chunks(chunks: list[str]) -> list[list[float]]:
 
 # ── FAISS storage ─────────────────────────────────────────────────────────────
 
-def store_vectors(
+def _store_faiss(
     knowledge_base_dir: Path,
     relative_path: str,
     chunks: list[str],
@@ -286,18 +288,32 @@ def store_vectors(
 
     matrix = np.array(vectors, dtype="float32")
     faiss.normalize_L2(matrix)
+    dim = matrix.shape[1]
 
-    if index_path.exists():
-        index = faiss.read_index(str(index_path))
-        if index.d != matrix.shape[1]:
-            raise RuntimeError("FAISS index dimension mismatch — rebuild vector store after changing embedding model.")
-    else:
-        index = faiss.IndexFlatIP(matrix.shape[1])
-
+    # Load existing records and remove any stale entries for this document so
+    # that re-ingestion doesn't accumulate duplicate chunks in the index.
     existing = json.loads(chunks_path.read_text(encoding="utf-8")) if chunks_path.exists() else []
-    doc_hash = hashlib.sha256(content).hexdigest()
-    start_idx = len(existing)
+    keep_records = [r for r in existing if r.get("metadata", {}).get("source") != relative_path]
 
+    # Rebuild the FAISS index from scratch (IndexFlatIP has no delete operation).
+    new_index = faiss.IndexFlatIP(dim)
+    if keep_records and index_path.exists():
+        old_index = faiss.read_index(str(index_path))
+        if old_index.d != dim:
+            raise RuntimeError("FAISS index dimension mismatch — rebuild vector store after changing embedding model.")
+        kept_vecs = np.vstack([old_index.reconstruct(r["id"]) for r in keep_records]).astype("float32")
+        new_index.add(kept_vecs)
+    elif index_path.exists():
+        old_index = faiss.read_index(str(index_path))
+        if old_index.d != dim:
+            raise RuntimeError("FAISS index dimension mismatch — rebuild vector store after changing embedding model.")
+
+    # Renumber kept records to match their new positions in the rebuilt index.
+    for new_id, record in enumerate(keep_records):
+        record["id"] = new_id
+
+    start_idx = len(keep_records)
+    doc_hash = hashlib.sha256(content).hexdigest()
     records = [
         {
             "id": start_idx + i,
@@ -313,12 +329,105 @@ def store_vectors(
         for i, chunk in enumerate(chunks)
     ]
 
-    index.add(matrix)
-    faiss.write_index(index, str(index_path))
+    new_index.add(matrix)
+    faiss.write_index(new_index, str(index_path))
     chunks_path.write_text(
-        json.dumps(existing + records, ensure_ascii=False, indent=2),
+        json.dumps(keep_records + records, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _qdrant_point_id(relative_path: str, chunk_index: int) -> int:
+    """Deterministic, stable Qdrant point ID (unaffected by PYTHONHASHSEED).
+
+    Masked to 63 bits to stay within signed int64 range, avoiding overflow in
+    any downstream layer that treats Qdrant point IDs as signed integers.
+    """
+    digest = hashlib.sha256(f"{relative_path}:{chunk_index}".encode()).hexdigest()
+    return int(digest[:16], 16) & 0x7FFFFFFFFFFFFFFF
+
+
+def _try_store_qdrant(
+    relative_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+    content: bytes,
+):
+    """Upsert vectors into Qdrant. Raises on any failure."""
+    try:
+        from qdrant_client.http.exceptions import UnexpectedResponse
+        from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+        from app.db.qdrant import get_qdrant_client
+    except ImportError as exc:
+        raise RuntimeError("Install qdrant-client to use Qdrant storage.") from exc
+
+    dim = len(vectors[0])
+    client = get_qdrant_client(timeout=30)
+
+    # Create collection if missing; catch 409 in case of concurrent first-upload
+    try:
+        client.create_collection(
+            collection_name=settings.QDRANT_COLLECTION,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+        )
+    except Exception as exc:
+        if not (isinstance(exc, UnexpectedResponse) and exc.status_code == 409):
+            raise
+
+    # Delete any existing points for this document before upserting so that
+    # re-ingestion with fewer chunks doesn't leave stale points behind.
+    client.delete(
+        collection_name=settings.QDRANT_COLLECTION,
+        points_selector=Filter(
+            must=[FieldCondition(key="source", match=MatchValue(value=relative_path))]
+        ),
+    )
+
+    doc_hash = hashlib.sha256(content).hexdigest()
+    points = [
+        PointStruct(
+            id=_qdrant_point_id(relative_path, i),
+            vector=vec,
+            payload={
+                "source": relative_path,
+                "chunk": i,
+                "text": chunk,
+                "sha256": doc_hash,
+                "embedding_model": settings.EMBED_MODEL,
+                "chunking_model": settings.AGENTIC_CHUNK_MODEL,
+            },
+        )
+        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+    ]
+    client.upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
+
+
+def store_vectors(
+    knowledge_base_dir: Path,
+    relative_path: str,
+    chunks: list[str],
+    vectors: list[list[float]],
+    content: bytes,
+) -> str:
+    """Store vectors in Qdrant (primary) with FAISS as fallback.
+
+    Returns "qdrant", "faiss", or "faiss_fallback".
+    "faiss_fallback" means Qdrant was configured but unreachable/failed.
+    """
+    if settings.QDRANT_URL:
+        try:
+            _try_store_qdrant(relative_path, chunks, vectors, content)
+            return VECTOR_BACKEND_QDRANT
+        except Exception as exc:
+            logger.warning(
+                "Qdrant storage failed for %s, falling back to FAISS: %s",
+                relative_path, exc,
+            )
+            _store_faiss(knowledge_base_dir, relative_path, chunks, vectors, content)
+            return VECTOR_BACKEND_FAISS_FALLBACK
+
+    _store_faiss(knowledge_base_dir, relative_path, chunks, vectors, content)
+    return VECTOR_BACKEND_FAISS
 
 
 # ── Chunk inspection ──────────────────────────────────────────────────────────
@@ -348,15 +457,44 @@ async def ingest_document(
     relative_path: str,
     content: bytes,
 ) -> dict:
-    text = parse_document(document_path.name, content)
-    if not text.strip():
-        raise ValueError("Document does not contain extractable text.")
+    from app.db.mongodb import upsert_kb_doc, count_degraded_kb_docs
+    from app.telemetry.otel import record_rag_event, set_kb_degraded_count, trace_span
 
-    chunks = await split_text(text, knowledge_base_dir, relative_path)
-    if not chunks:
-        raise ValueError("Chunking produced no usable text.")
+    with trace_span("ingest_document", {"path": relative_path}):
+        text = parse_document(document_path.name, content)
+        if not text.strip():
+            raise ValueError("Document does not contain extractable text.")
 
-    vectors = await embed_chunks(chunks)
-    store_vectors(knowledge_base_dir, relative_path, chunks, vectors, content)
+        chunks = await split_text(text, knowledge_base_dir, relative_path)
+        if not chunks:
+            raise ValueError("Chunking produced no usable text.")
 
-    return {"chunks": len(chunks), "embedding_model": settings.EMBED_MODEL}
+        vectors = await embed_chunks(chunks)
+        stored_in = await asyncio.to_thread(
+            store_vectors, knowledge_base_dir, relative_path, chunks, vectors, content
+        )
+
+        ingestion_status = "degraded" if stored_in == VECTOR_BACKEND_FAISS_FALLBACK else "ok"
+        await upsert_kb_doc(relative_path, {
+            "ingestion_status": ingestion_status,
+            "vector_backend": stored_in,
+            "chunks": len(chunks),
+            "embedding_model": settings.EMBED_MODEL,
+        })
+
+        if stored_in == VECTOR_BACKEND_FAISS_FALLBACK:
+            logger.warning("Document %s stored in FAISS fallback — Qdrant unreachable", relative_path)
+            record_rag_event("ingestion_degraded", backend=VECTOR_BACKEND_FAISS_FALLBACK, path=relative_path)
+            # Refresh gauge immediately on degradation so the alert fires promptly.
+            # The periodic background loop handles the success path.
+            try:
+                degraded_count = await count_degraded_kb_docs()
+                set_kb_degraded_count(degraded_count)
+            except Exception as exc:
+                logger.warning("Could not refresh KB degraded gauge: %s", exc)
+
+        return {
+            "chunks": len(chunks),
+            "embedding_model": settings.EMBED_MODEL,
+            "stored_in": stored_in,
+        }

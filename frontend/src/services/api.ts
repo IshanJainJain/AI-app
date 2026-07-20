@@ -1,7 +1,7 @@
 import axios from "axios";
 import type {
   TokenResponse, User, ThreadPayload, Thread,
-  KBPayload, ChunksPayload, ImageContext,
+  KBPayload, ChunksPayload, ImageContext, KBHealthPayload,
 } from "../types";
 
 // When embedded as MFE, set VITE_CHATBOT_API_BASE to the absolute chatbot backend URL.
@@ -96,6 +96,8 @@ export const kbApi = {
 
   getChunks: (path: string) =>
     api.get<ChunksPayload>(`/knowledge-base/files/chunks?path=${encodeURIComponent(path)}`),
+
+  health: () => api.get<KBHealthPayload>("/admin/kb/health"),
 };
 
 export default api;

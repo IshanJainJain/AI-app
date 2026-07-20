@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   Folder, FileText, Upload, FolderPlus, ChevronRight,
-  Home, Loader2, X, ChevronDown,
+  Home, Loader2, X, ChevronDown, AlertTriangle,
 } from "lucide-react";
 import clsx from "clsx";
 import { kbApi } from "../services/api";
-import type { KBFolder, KBFile, ChunkRecord } from "../types";
+import type { KBFolder, KBFile, ChunkRecord, KBHealthPayload } from "../types";
 
 function fileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -26,6 +26,7 @@ export default function KnowledgeBase() {
   const [selectedFile, setSelectedFile] = useState<KBFile | null>(null);
   const [chunks, setChunks] = useState<ChunkRecord[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
+  const [health, setHealth] = useState<KBHealthPayload | null>(null);
 
   const loadPath = async (p: string) => {
     setLoading(true);
@@ -43,7 +44,16 @@ export default function KnowledgeBase() {
     }
   };
 
-  useEffect(() => { loadPath(""); }, []);
+  const refreshHealth = () => {
+    if (localStorage.getItem("token")) {
+      kbApi.health().then((r) => setHealth(r.data)).catch(() => {/* non-fatal */});
+    }
+  };
+
+  useEffect(() => {
+    loadPath("");
+    refreshHealth();
+  }, []);
 
   const createFolder = async () => {
     if (!newFolder.trim()) return;
@@ -61,6 +71,7 @@ export default function KnowledgeBase() {
     try {
       await kbApi.upload(path, file);
       await loadPath(path);
+      refreshHealth();
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -123,6 +134,25 @@ export default function KnowledgeBase() {
           </label>
         </div>
       </div>
+
+      {/* Degraded-docs alert banner */}
+      {health && health.degraded_count > 0 && (
+        <div className="mb-4 flex items-start gap-3 bg-amber-950 border border-amber-800 rounded-lg px-4 py-3">
+          <AlertTriangle size={16} className="text-amber-400 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-amber-300">
+              {health.degraded_count} {health.degraded_count === 1 ? "document" : "documents"} stored in FAISS fallback
+            </p>
+            <p className="text-xs text-amber-500 mt-0.5">
+              Qdrant was unreachable during ingestion. Search quality may be degraded.
+              Re-upload these documents once Qdrant is healthy to restore full-quality retrieval.
+            </p>
+          </div>
+          <span className="text-xs font-mono text-amber-600 flex-shrink-0 mt-0.5">
+            {health.degraded_count} degraded
+          </span>
+        </div>
+      )}
 
       {/* Breadcrumb */}
       <div className="flex items-center gap-1 text-sm text-gray-500 mb-4">

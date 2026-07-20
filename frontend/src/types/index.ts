@@ -84,7 +84,7 @@ export interface KBPayload {
   parent: string;
   folders: KBFolder[];
   files: KBFile[];
-  ingestion?: { chunks: number; embedding_model: string };
+  ingestion?: { chunks: number; embedding_model: string; stored_in?: string };
 }
 
 export interface ChunkRecord {
@@ -135,4 +135,12 @@ export interface DashboardStats {
   total_messages: number;
   total_kb_documents: number;
   active_users: number;
+}
+
+// ── KB health ─────────────────────────────────────────────────────────────────
+
+export interface KBHealthPayload {
+  degraded_count: number;
+  /** null = Qdrant not configured; true/false = configured and reachable/unreachable */
+  qdrant_healthy: boolean | null;
 }

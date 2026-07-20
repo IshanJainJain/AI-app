@@ -1,0 +1,46 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: knowledge-base
+    folder: ChatBot Alerts
+    interval: 1m
+    rules:
+      - uid: kb-degraded-docs
+        title: KB documents degraded to FAISS fallback
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: chatbot_kb_degraded_documents_total or vector(0)
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+                  type: query
+        for: 5m
+        annotations:
+          summary: "{{ $value }} KB document(s) are stored in FAISS fallback"
+          description: >
+            Qdrant was unreachable during ingestion for {{ $value }} document(s).
+            Search quality is degraded. Re-ingest affected documents once Qdrant
+            is restored to recover full retrieval quality.
+        labels:
+          severity: warning
+          team: platform
+        noDataState: OK
+        execErrState: Alerting

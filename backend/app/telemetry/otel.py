@@ -1,5 +1,6 @@
 """OpenTelemetry setup — traces and metrics."""
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Generator
 
@@ -7,6 +8,18 @@ logger = logging.getLogger(__name__)
 
 _tracer = None
 _meter = None
+_kb_degraded_count: int = 0
+_kb_degraded_lock = threading.Lock()
+_llm_latency_hist = None
+_agent_tasks_counter = None
+
+
+def _observe_kb_degraded_gauge(options):
+    """Module-level callback so the binding to _kb_degraded_count is unambiguous."""
+    from opentelemetry.metrics import Observation
+    with _kb_degraded_lock:
+        count = _kb_degraded_count
+    yield Observation(count)
 
 
 def setup_telemetry(service_name: str, service_version: str, otlp_endpoint: str):
@@ -44,6 +57,16 @@ def setup_telemetry(service_name: str, service_version: str, otlp_endpoint: str)
         metrics.set_meter_provider(meter_provider)
         _meter = metrics.get_meter(service_name, service_version)
 
+        global _llm_latency_hist, _agent_tasks_counter
+        _llm_latency_hist = _meter.create_histogram("llm.latency_ms", unit="ms")
+        _agent_tasks_counter = _meter.create_counter("agent.tasks_total")
+
+        _meter.create_observable_gauge(
+            "kb_degraded_documents_total",
+            callbacks=[_observe_kb_degraded_gauge],
+            description="KB documents stored in FAISS fallback instead of Qdrant",
+        )
+
         logger.info("OpenTelemetry configured → %s", otlp_endpoint)
     except Exception as exc:
         logger.warning("OTEL setup failed (continuing without telemetry): %s", exc)
@@ -79,20 +102,40 @@ def get_current_trace_id() -> str:
 
 
 def record_llm_latency(ms: int, model: str, agent_type: str):
-    if _meter is None:
+    if _llm_latency_hist is None:
         return
     try:
-        hist = _meter.create_histogram("llm.latency_ms", unit="ms")
-        hist.record(ms, {"model": model, "agent_type": agent_type})
+        _llm_latency_hist.record(ms, {"model": model, "agent_type": agent_type})
     except Exception:
         pass
 
 
 def record_agent_task(agent_type: str, status: str):
-    if _meter is None:
+    if _agent_tasks_counter is None:
         return
     try:
-        counter = _meter.create_counter("agent.tasks_total")
-        counter.add(1, {"agent_type": agent_type, "status": status})
+        _agent_tasks_counter.add(1, {"agent_type": agent_type, "status": status})
     except Exception:
         pass
+
+
+def record_rag_event(event_name: str, **attributes):
+    """Add a named event to the current span (falls back to a log line when no active span)."""
+    log_attrs = " ".join(f"{k}={v}" for k, v in attributes.items())
+    logger.info("rag_event %s %s", event_name, log_attrs)
+    if _tracer is None:
+        return
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.add_event(event_name, {k: str(v) for k, v in attributes.items()})
+    except Exception:
+        pass
+
+
+def set_kb_degraded_count(n: int):
+    """Update the in-process snapshot used by the kb_degraded_documents_total gauge."""
+    global _kb_degraded_count
+    with _kb_degraded_lock:
+        _kb_degraded_count = n

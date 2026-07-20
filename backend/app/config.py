@@ -54,10 +54,18 @@ class Settings(BaseSettings):
     VECTOR_STORE_NAME: str = ".vector_store"
     KNOWLEDGE_BASE_DIR: str = "knowledge_base"
 
+    # ── Qdrant vector store (primary; FAISS is fallback when unavailable) ────────
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION: str = "knowledge_base"
+
     # ── Observability ─────────────────────────────────────────────────────────
     OTEL_ENABLED: bool = False
     OTEL_SERVICE_NAME: str = "chatbot-api"
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+    # How often (seconds) the background task re-queries MongoDB to keep the
+    # kb_degraded_documents_total gauge accurate across all Gunicorn workers.
+    KB_DEGRADED_GAUGE_REFRESH_SECONDS: int = 300
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
